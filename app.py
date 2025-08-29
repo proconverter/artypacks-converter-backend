@@ -6,37 +6,32 @@ from flask import Flask, request, jsonify, send_from_directory
 from werkzeug.utils import secure_filename
 from PIL import Image
 from supabase import create_client, Client
-from flask_cors import CORS # Make sure CORS is imported
+from flask_cors import CORS
 
 # --- Flask App Initialization ---
 app = Flask(__name__)
 
-# --- CORS Configuration (THE FIX IS HERE) ---
-# Define the list of allowed frontend domains
-origins = [
-    "https://www.artypacks.app",
-    "https://artypacks.app"
-]
-# Apply CORS to all routes, allowing requests only from the origins list
-CORS(app, resources={r"/*": {"origins": origins}} )
+# --- Configuration ---
+# Allow requests from your specific frontend domain for all routes
+CORS(app, resources={r"/*": {"origins": "https://www.artypacks.app"}} )
 
-
-# --- General Configuration ---
 UPLOAD_FOLDER = 'uploads'
 os.makedirs(UPLOAD_FOLDER, exist_ok=True)
 
 # --- Supabase Configuration ---
+# Ensure these are set as environment variables in Render
 SUPABASE_URL = os.environ.get('SUPABASE_URL')
-SUPABASE_KEY = os.environ.get('SUPABASE_SERVICE_KEY') # Use the Service Role Key
+SUPABASE_KEY = os.environ.get('SUPABASE_SERVICE_KEY')
 
 if not SUPABASE_URL or not SUPABASE_KEY:
+    # This will cause a clean error on startup if variables are missing
     raise ValueError("Supabase URL and Service Key must be set in environment variables.")
 
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
 # --- Brushset Processing Function ---
 def process_brushset(filepath, original_filename_base):
-    # ... (This function does not need to be changed) ...
+    """Extracts, validates, and renames images from a .brushset file."""
     temp_extract_dir = os.path.join(UPLOAD_FOLDER, f"extract_{uuid.uuid4().hex}")
     os.makedirs(temp_extract_dir, exist_ok=True)
     
@@ -46,6 +41,7 @@ def process_brushset(filepath, original_filename_base):
             brushset_zip.extractall(temp_extract_dir)
             
             image_files = []
+            # Find all valid images (PNGs/JPEGs >= 1024x1024)
             for root, _, files in os.walk(temp_extract_dir):
                 for name in files:
                     if name.lower().endswith(('.png', '.jpg', '.jpeg')) and 'artwork.png' not in name.lower():
@@ -57,55 +53,49 @@ def process_brushset(filepath, original_filename_base):
                         except (IOError, SyntaxError):
                             continue
             
+            # Sort files to ensure consistent numbering
             image_files.sort()
             
+            # Create a dedicated output directory for this job's processed images
             output_dir = os.path.join(UPLOAD_FOLDER, f"processed_{uuid.uuid4().hex}")
             os.makedirs(output_dir, exist_ok=True)
 
+            # Rename and copy the valid images
             for i, img_path in enumerate(image_files):
                 new_filename = f"{original_filename_base}_{i + 1}.png"
                 new_filepath = os.path.join(output_dir, new_filename)
                 shutil.copy(img_path, new_filepath)
                 renamed_image_paths.append(new_filepath)
 
-        shutil.rmtree(temp_extract_dir, ignore_errors=True)
         return renamed_image_paths, None, output_dir
 
     except zipfile.BadZipFile:
-        shutil.rmtree(temp_extract_dir, ignore_errors=True)
         return None, "A provided file seems to be corrupted or isn't a valid .brushset.", None
     except Exception as e:
         print(f"Error processing brushset: {e}")
-        shutil.rmtree(temp_extract_dir, ignore_errors=True)
         return None, "An unexpected error occurred during file processing.", None
+    finally:
+        # Clean up the temporary extraction folder
+        shutil.rmtree(temp_extract_dir, ignore_errors=True)
 
-# In your app.py file, replace the old check_license function with this one.
-
+# --- License Check Route ---
 @app.route('/check-license', methods=['POST'])
 def check_license():
-    # --- THIS IS THE FIX ---
-    # Get the JSON data sent from the frontend
+    """Checks the validity and credit status of a license key."""
     data = request.get_json()
     if not data:
-        return jsonify({"error": "Invalid request. No JSON data received."}), 400
+        return jsonify({"message": "Invalid request. No JSON data received."}), 400
 
-    # Read the licenseKey from the JSON data
     license_key = data.get('licenseKey')
-    # --- END OF FIX ---
-
     if not license_key:
-        return jsonify({"error": "Missing license key in request."}), 400
+        return jsonify({"message": "Missing license key in request."}), 400
 
     try:
-        # Call the Supabase function
         response = supabase.rpc('get_license_status', {'p_license_key': license_key}).execute()
         
-        # Check if the function returned any data
         if not response.data:
-            # This handles cases where the key truly doesn't exist
             return jsonify({"isValid": False, "message": "License key not found."}), 404
 
-        # The function worked, get the results
         result = response.data[0]
         is_valid = result.get('is_valid')
         credits = result.get('sessions_remaining')
@@ -114,20 +104,20 @@ def check_license():
         return jsonify({"isValid": is_valid, "credits": credits, "message": message})
 
     except Exception as e:
-        # Log the detailed error on the server for debugging
         print(f"Supabase RPC error on /check-license: {e}")
-        # Return a generic error to the user
-        return jsonify({"error": "Could not validate license due to a server error."}), 500
-
+        return jsonify({"message": "Could not validate license due to a server error."}), 500
 
 # --- Main Conversion Route ---
 @app.route('/convert', methods=['POST'])
 def convert_files():
+    """Validates license, decrements credit, and converts uploaded files."""
+    # 1. License Key Validation (reading from form data)
     license_key = request.form.get('licenseKey')
     if not license_key:
         return jsonify({"message": "Missing license key."}), 401
 
     try:
+        # Use the atomic 'decrement_license' function
         response = supabase.rpc('decrement_license', {'p_license_key': license_key}).execute()
         
         if not response.data or not response.data[0].get('success'):
@@ -135,19 +125,21 @@ def convert_files():
              return jsonify({"message": message}), 403
 
     except Exception as e:
-        print(f"Supabase RPC error on /convert: {e}")
+        print(f"Supabase RPC error during conversion: {e}")
         return jsonify({"message": "Could not validate license. Please try again."}), 500
 
-    if 'brushsets' not in request.files:
+    # 2. File Handling (license is now confirmed and decremented)
+    if 'files' not in request.files:
         return jsonify({"message": "No files were uploaded."}), 400
 
-    files = request.files.getlist('brushsets')
+    files = request.files.getlist('files')
     if not files or files[0].filename == '':
         return jsonify({"message": "No selected files."}), 400
 
     all_processed_images = []
     temp_dirs_to_clean = []
 
+    # 3. Process each uploaded file
     for file in files:
         if file and file.filename.endswith('.brushset'):
             filename = secure_filename(file.filename)
@@ -158,7 +150,7 @@ def convert_files():
             
             processed_images, error, output_dir = process_brushset(filepath, base_name)
             
-            os.remove(filepath)
+            os.remove(filepath) # Clean up original upload immediately
 
             if error:
                 for d in temp_dirs_to_clean: shutil.rmtree(d, ignore_errors=True)
@@ -167,6 +159,7 @@ def convert_files():
             all_processed_images.extend(processed_images)
             if output_dir: temp_dirs_to_clean.append(output_dir)
 
+    # 4. Zip all processed files from this job together
     if not all_processed_images:
         return jsonify({"message": "No valid stamps (min 1024x1024) were found in the provided files."}), 400
 
@@ -177,22 +170,25 @@ def convert_files():
         for img_path in all_processed_images:
             zf.write(img_path, os.path.basename(img_path))
 
+    # 5. Clean up temporary directories containing the processed PNGs
     for d in temp_dirs_to_clean:
         shutil.rmtree(d, ignore_errors=True)
 
-    # IMPORTANT: Return the full URL for the download
-    download_url = f"{request.host_url}download/{zip_filename}"
-    return jsonify({"downloadUrl": download_url})
+    # 6. Return the URL for the final zip file
+    return jsonify({"downloadUrl": f"/download/{zip_filename}"})
 
 # --- Download Route ---
 @app.route('/download/<filename>')
 def download_file(filename):
+    """Serves the generated zip file for download."""
     return send_from_directory(UPLOAD_FOLDER, filename, as_attachment=True)
 
-# --- Health Check Route (Good Practice) ---
+# --- Health Check Route ---
 @app.route('/')
 def index():
+    """A simple health check endpoint."""
     return "Artypacks Converter Backend is running."
 
+# This is for local development testing; Gunicorn will run the app in production.
 if __name__ == '__main__':
-    app.run(debug=True)
+    app.run(debug=True, port=5001)
