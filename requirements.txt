@@ -1,8 +1,5 @@
 Flask
-python-dotenv
 Pillow
-supabase==1.0.3
-gotrue==0.5.1
-werkzeug
+supabase
 gunicorn
 flask-cors
