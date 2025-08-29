@@ -79,31 +79,46 @@ def process_brushset(filepath, original_filename_base):
         shutil.rmtree(temp_extract_dir, ignore_errors=True)
         return None, "An unexpected error occurred during file processing.", None
 
-# --- License Check Route ---
+# In your app.py file, replace the old check_license function with this one.
+
 @app.route('/check-license', methods=['POST'])
 def check_license():
+    # --- THIS IS THE FIX ---
+    # Get the JSON data sent from the frontend
     data = request.get_json()
+    if not data:
+        return jsonify({"error": "Invalid request. No JSON data received."}), 400
+
+    # Read the licenseKey from the JSON data
     license_key = data.get('licenseKey')
+    # --- END OF FIX ---
 
     if not license_key:
-        return jsonify({"isValid": False, "message": "License key is required."}), 400
+        return jsonify({"error": "Missing license key in request."}), 400
 
     try:
+        # Call the Supabase function
         response = supabase.rpc('get_license_status', {'p_license_key': license_key}).execute()
         
-        if response.data:
-            result = response.data[0]
-            return jsonify({
-                "isValid": result['is_valid'],
-                "credits": result['sessions_remaining'],
-                "message": result['message']
-            }), 200
-        else:
-            return jsonify({"isValid": False, "message": "Invalid license key."}), 404
+        # Check if the function returned any data
+        if not response.data:
+            # This handles cases where the key truly doesn't exist
+            return jsonify({"isValid": False, "message": "License key not found."}), 404
+
+        # The function worked, get the results
+        result = response.data[0]
+        is_valid = result.get('is_valid')
+        credits = result.get('sessions_remaining')
+        message = result.get('message')
+
+        return jsonify({"isValid": is_valid, "credits": credits, "message": message})
 
     except Exception as e:
+        # Log the detailed error on the server for debugging
         print(f"Supabase RPC error on /check-license: {e}")
-        return jsonify({"isValid": False, "message": "Could not validate license due to a server error."}), 500
+        # Return a generic error to the user
+        return jsonify({"error": "Could not validate license due to a server error."}), 500
+
 
 # --- Main Conversion Route ---
 @app.route('/convert', methods=['POST'])
