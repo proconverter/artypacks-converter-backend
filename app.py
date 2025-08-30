@@ -11,10 +11,17 @@ from flask_cors import CORS
 # --- Flask App Initialization ---
 app = Flask(__name__)
 
-# --- Configuration ---
-# Allow requests from your specific frontend domain for all routes
-CORS(app, resources={r"/*": {"origins": "https://www.artypacks.app"}} )
+# --- CORS Configuration ---
+# Get the allowed origins from an environment variable, split by comma.
+# This makes the app flexible for both production and sandbox environments.
+CORS_ALLOWED_ORIGINS = os.environ.get('CORS_ORIGINS', '').split(',')
 
+CORS(app, resources={
+    r"/check-license": {"origins": CORS_ALLOWED_ORIGINS},
+    r"/convert": {"origins": CORS_ALLOWED_ORIGINS}
+})
+
+# --- Folder Configuration ---
 UPLOAD_FOLDER = 'uploads'
 os.makedirs(UPLOAD_FOLDER, exist_ok=True)
 
@@ -53,14 +60,11 @@ def process_brushset(filepath, original_filename_base):
                         except (IOError, SyntaxError):
                             continue
             
-            # Sort files to ensure consistent numbering
             image_files.sort()
             
-            # Create a dedicated output directory for this job's processed images
             output_dir = os.path.join(UPLOAD_FOLDER, f"processed_{uuid.uuid4().hex}")
             os.makedirs(output_dir, exist_ok=True)
 
-            # Rename and copy the valid images
             for i, img_path in enumerate(image_files):
                 new_filename = f"{original_filename_base}_{i + 1}.png"
                 new_filepath = os.path.join(output_dir, new_filename)
@@ -75,7 +79,6 @@ def process_brushset(filepath, original_filename_base):
         print(f"Error processing brushset: {e}")
         return None, "An unexpected error occurred during file processing.", None
     finally:
-        # Clean up the temporary extraction folder
         shutil.rmtree(temp_extract_dir, ignore_errors=True)
 
 # --- License Check Route ---
@@ -111,13 +114,11 @@ def check_license():
 @app.route('/convert', methods=['POST'])
 def convert_files():
     """Validates license, decrements credit, and converts uploaded files."""
-    # 1. License Key Validation (reading from form data)
     license_key = request.form.get('licenseKey')
     if not license_key:
         return jsonify({"message": "Missing license key."}), 401
 
     try:
-        # Use the atomic 'decrement_license' function
         response = supabase.rpc('decrement_license', {'p_license_key': license_key}).execute()
         
         if not response.data or not response.data[0].get('success'):
@@ -128,7 +129,6 @@ def convert_files():
         print(f"Supabase RPC error during conversion: {e}")
         return jsonify({"message": "Could not validate license. Please try again."}), 500
 
-    # 2. File Handling (license is now confirmed and decremented)
     if 'files' not in request.files:
         return jsonify({"message": "No files were uploaded."}), 400
 
@@ -139,7 +139,6 @@ def convert_files():
     all_processed_images = []
     temp_dirs_to_clean = []
 
-    # 3. Process each uploaded file
     for file in files:
         if file and file.filename.endswith('.brushset'):
             filename = secure_filename(file.filename)
@@ -150,7 +149,7 @@ def convert_files():
             
             processed_images, error, output_dir = process_brushset(filepath, base_name)
             
-            os.remove(filepath) # Clean up original upload immediately
+            os.remove(filepath)
 
             if error:
                 for d in temp_dirs_to_clean: shutil.rmtree(d, ignore_errors=True)
@@ -159,7 +158,6 @@ def convert_files():
             all_processed_images.extend(processed_images)
             if output_dir: temp_dirs_to_clean.append(output_dir)
 
-    # 4. Zip all processed files from this job together
     if not all_processed_images:
         return jsonify({"message": "No valid stamps (min 1024x1024) were found in the provided files."}), 400
 
@@ -170,11 +168,9 @@ def convert_files():
         for img_path in all_processed_images:
             zf.write(img_path, os.path.basename(img_path))
 
-    # 5. Clean up temporary directories containing the processed PNGs
     for d in temp_dirs_to_clean:
         shutil.rmtree(d, ignore_errors=True)
 
-    # 6. Return the URL for the final zip file
     return jsonify({"downloadUrl": f"/download/{zip_filename}"})
 
 # --- Download Route ---
