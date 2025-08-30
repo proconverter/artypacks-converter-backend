@@ -6,7 +6,8 @@ from flask import Flask, request, jsonify, send_from_directory
 from werkzeug.utils import secure_filename
 from PIL import Image
 from supabase import create_client, Client
-# We are NOT using the flask_cors library anymore for this test.
+# 1. Import the CORS extension
+from flask_cors import CORS
 
 # --- Flask App Initialization ---
 app = Flask(__name__)
@@ -18,24 +19,21 @@ if not SUPABASE_URL or not SUPABASE_KEY:
     raise ValueError("Supabase URL and Service Key must be set in environment variables.")
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
-# --- Manual CORS Handling ---
-# This function will be called after each request to add our headers.
-@app.after_request
-def after_request(response):
-    header = response.headers
-    header['Access-Control-Allow-Origin'] = 'https://artypacks-converter-frontend.onrender.com'
-    header['Access-Control-Allow-Headers'] = 'Content-Type, Authorization'
-    header['Access-Control-Allow-Methods'] = 'POST, GET, OPTIONS, PUT, DELETE'
-    return response
+# --- CORS Configuration using Flask-Cors ---
+# 2. Define the list of allowed frontend origins
+allowed_origins = [
+    "https://procreate-landing-page-sandbox.onrender.com", # Your SANDBOX frontend
+    "https://procreate-landing-page.onrender.com"        # Your PRODUCTION frontend
+]
+
+# 3. Initialize the CORS extension
+# This enables CORS for all routes, but ONLY for the origins listed above.
+CORS(app, origins=allowed_origins, supports_credentials=True )
 
 # --- License Check Route ---
-@app.route('/check-license', methods=['POST', 'OPTIONS'] )
+# We no longer need to handle 'OPTIONS' manually; flask-cors does it for us.
+@app.route('/check-license', methods=['POST'])
 def check_license():
-    if request.method == 'OPTIONS':
-        # This handles the browser's preflight request
-        return jsonify({'status': 'ok'}), 200
-    
-    # This handles the actual POST request
     data = request.get_json()
     if not data or 'licenseKey' not in data:
         return jsonify({"message": "Invalid request."}), 400
@@ -57,12 +55,9 @@ def check_license():
         return jsonify({"message": "Could not validate license due to a server error."}), 500
 
 # --- Main Conversion Route ---
-@app.route('/convert', methods=['POST', 'OPTIONS'])
+# We no longer need to handle 'OPTIONS' manually here either.
+@app.route('/convert', methods=['POST'])
 def convert_files():
-    if request.method == 'OPTIONS':
-        return jsonify({'status': 'ok'}), 200
-    
-    # ... The rest of your conversion logic ...
     license_key = request.form.get('licenseKey')
     if not license_key:
         return jsonify({"message": "Missing license key."}), 401
@@ -111,7 +106,10 @@ def convert_files():
             zf.write(img_path, os.path.basename(img_path))
     for d in temp_dirs_to_clean:
         shutil.rmtree(d, ignore_errors=True)
-    return jsonify({"downloadUrl": f"/download/{zip_filename}"})
+    
+    # The download URL should be a full URL for the frontend to use
+    backend_url = request.host_url.rstrip('/')
+    return jsonify({"downloadUrl": f"{backend_url}/download/{zip_filename}"})
 
 # --- Helper Functions (process_brushset, download_file, etc.) ---
 def process_brushset(filepath, original_filename_base):
