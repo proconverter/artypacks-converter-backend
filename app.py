@@ -28,7 +28,7 @@ allowed_origins = [
 
 # 3. Initialize the CORS extension
 # This enables CORS for all routes, but ONLY for the origins listed above.
-CORS(app, origins=allowed_origins, supports_credentials=True )
+CORS(app, origins=allowed_origins, supports_credentials=True  )
 
 # --- License Check Route ---
 # We no longer need to handle 'OPTIONS' manually; flask-cors does it for us.
@@ -81,6 +81,14 @@ def convert_files():
     temp_dirs_to_clean = []
     UPLOAD_FOLDER = 'uploads'
     os.makedirs(UPLOAD_FOLDER, exist_ok=True)
+    
+    # --- MODIFICATION START: Capture the first brushset name for the zip file ---
+    first_brushset_name = "Conversion" # Default name
+    if files and files[0].filename:
+        # Secure the filename and remove the .brushset extension
+        safe_name = secure_filename(files[0].filename)
+        first_brushset_name = os.path.splitext(safe_name)[0]
+    # --- MODIFICATION END ---
 
     for file in files:
         if file and file.filename.endswith('.brushset'):
@@ -99,7 +107,13 @@ def convert_files():
     if not all_processed_images:
         return jsonify({"message": "No valid stamps (min 1024x1024) were found."}), 400
 
-    zip_filename = f"artypacks_conversion_{uuid.uuid4().hex}.zip"
+    # --- MODIFICATION START: Use the new dynamic filename ---
+    # If multiple files were uploaded, add a suffix like "-and-more"
+    suffix = "-and-more" if len(files) > 1 else ""
+    zip_base_filename = f"ArtyPacks_{first_brushset_name}{suffix}.zip"
+    zip_filename = secure_filename(zip_base_filename) # Final sanitization
+    # --- MODIFICATION END ---
+    
     zip_filepath = os.path.join(UPLOAD_FOLDER, zip_filename)
     with zipfile.ZipFile(zip_filepath, 'w') as zf:
         for img_path in all_processed_images:
