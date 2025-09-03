@@ -6,6 +6,7 @@ from flask import Flask, request, jsonify, send_from_directory
 from werkzeug.utils import secure_filename
 from PIL import Image
 from supabase import create_client, Client
+# 1. Import the CORS extension
 from flask_cors import CORS
 
 # --- Flask App Initialization ---
@@ -18,36 +19,43 @@ if not SUPABASE_URL or not SUPABASE_KEY:
     raise ValueError("Supabase URL and Service Key must be set in environment variables.")
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
-# --- CORS Configuration ---
+# --- CORS Configuration using Flask-Cors ---
+# 2. Define the list of allowed frontend origins
 allowed_origins = [
-    "https://procreate-landing-page-sandbox.onrender.com",
-    "https://procreate-landing-page.onrender.com"
+    "https://procreate-landing-page-sandbox.onrender.com", # Your SANDBOX frontend
+    "https://procreate-landing-page.onrender.com"        # Your PRODUCTION frontend
 ]
-CORS(app, origins=allowed_origins, supports_credentials=True )
 
-# --- License Check Route (Unchanged) ---
+# 3. Initialize the CORS extension
+# This enables CORS for all routes, but ONLY for the origins listed above.
+CORS(app, origins=allowed_origins, supports_credentials=True   )
+
+# --- License Check Route ---
+# We no longer need to handle 'OPTIONS' manually; flask-cors does it for us.
 @app.route('/check-license', methods=['POST'])
 def check_license():
     data = request.get_json()
     if not data or 'licenseKey' not in data:
-        return jsonify({"message": "Invalid request: Missing license key."}), 400
+        return jsonify({"message": "Invalid request."}), 400
     
     license_key = data['licenseKey']
     try:
         response = supabase.rpc('get_license_status', {'p_license_key': license_key}).execute()
         if not response.data:
             return jsonify({"isValid": False, "message": "License key not found."}), 404
+        
         result = response.data[0]
         return jsonify({
             "isValid": result.get('is_valid'),
             "credits": result.get('sessions_remaining'),
             "message": result.get('message')
-        }), 200
+        })
     except Exception as e:
-        print(f"CRITICAL ERROR in /check-license: {e}")
-        return jsonify({"message": "A server error occurred while validating the license."}), 500
+        print(f"Supabase RPC error on /check-license: {e}")
+        return jsonify({"message": "Could not validate license due to a server error."}), 500
 
-# --- Main Conversion Route (MODIFIED TO CALL NEW FUNCTION) ---
+# --- Main Conversion Route ---
+# We no longer need to handle 'OPTIONS' manually here either.
 @app.route('/convert', methods=['POST'])
 def convert_files():
     license_key = request.form.get('licenseKey')
@@ -55,16 +63,13 @@ def convert_files():
         return jsonify({"message": "Missing license key."}), 401
 
     try:
-        # --- THIS IS THE ONLY LINE THAT CHANGED ---
-        decrement_response = supabase.rpc('use_one_credit', {'p_license_key': license_key}).execute()
-        # -----------------------------------------
-        
-        if not decrement_response.data or not decrement_response.data[0].get('success'):
-             message = decrement_response.data[0].get('message', 'Invalid license or no credits remaining.')
+        response = supabase.rpc('decrement_license', {'p_license_key': license_key}).execute()
+        if not response.data or not response.data[0].get('success'):
+             message = response.data[0].get('message', 'Invalid or expired license.')
              return jsonify({"message": message}), 403
     except Exception as e:
-        print(f"CRITICAL ERROR in /convert during credit use: {e}")
-        return jsonify({"message": "Failed to update credits due to a database error. Please try again."}), 500
+        print(f"Supabase RPC error during conversion: {e}")
+        return jsonify({"message": "Could not validate license. Please try again."}), 500
 
     if 'files' not in request.files:
         return jsonify({"message": "No files were uploaded."}), 400
@@ -77,52 +82,54 @@ def convert_files():
     UPLOAD_FOLDER = 'uploads'
     os.makedirs(UPLOAD_FOLDER, exist_ok=True)
     
-    try:
-        for file in files:
-            if file and file.filename.endswith('.brushset'):
-                filename = secure_filename(file.filename)
-                filepath = os.path.join(UPLOAD_FOLDER, filename)
-                file.save(filepath)
-                base_name = os.path.splitext(filename)[0]
-                processed_images, error, output_dir = process_brushset(filepath, base_name)
-                os.remove(filepath)
-                if error:
-                    for d in temp_dirs_to_clean: shutil.rmtree(d, ignore_errors=True)
-                    return jsonify({"message": error}), 400
-                all_processed_images.extend(processed_images)
-                if output_dir: temp_dirs_to_clean.append(output_dir)
-    except Exception as e:
-        print(f"CRITICAL ERROR during file processing: {e}")
-        for d in temp_dirs_to_clean: shutil.rmtree(d, ignore_errors=True)
-        return jsonify({"message": f"A critical error occurred while processing the file: {str(e)}"}), 500
+    # --- MODIFICATION START: Capture the first brushset name for the zip file ---
+    first_brushset_name = "Conversion" # Default name
+    if files and files[0].filename:
+        # Secure the filename and remove the .brushset extension
+        safe_name = secure_filename(files[0].filename)
+        first_brushset_name = os.path.splitext(safe_name)[0]
+    # --- MODIFICATION END ---
+
+    for file in files:
+        if file and file.filename.endswith('.brushset'):
+            filename = secure_filename(file.filename)
+            filepath = os.path.join(UPLOAD_FOLDER, filename)
+            file.save(filepath)
+            base_name = os.path.splitext(filename)[0]
+            processed_images, error, output_dir = process_brushset(filepath, base_name)
+            os.remove(filepath)
+            if error:
+                for d in temp_dirs_to_clean: shutil.rmtree(d, ignore_errors=True)
+                return jsonify({"message": error}), 400
+            all_processed_images.extend(processed_images)
+            if output_dir: temp_dirs_to_clean.append(output_dir)
 
     if not all_processed_images:
-        return jsonify({"message": "No valid stamps (min 1024x1024) were found in the brushset(s)."}), 400
+        return jsonify({"message": "No valid stamps (min 1024x1024) were found."}), 400
 
-    first_brushset_name = os.path.splitext(secure_filename(files[0].filename))[0] if files else "Conversion"
+    # --- MODIFICATION START: Use the new dynamic filename ---
+    # If multiple files were uploaded, add a suffix like "-and-more"
     suffix = "-and-more" if len(files) > 1 else ""
     zip_base_filename = f"ArtyPacks_{first_brushset_name}{suffix}.zip"
-    zip_filename = secure_filename(zip_base_filename)
+    zip_filename = secure_filename(zip_base_filename) # Final sanitization
+    # --- MODIFICATION END ---
     
     zip_filepath = os.path.join(UPLOAD_FOLDER, zip_filename)
     with zipfile.ZipFile(zip_filepath, 'w') as zf:
         for img_path in all_processed_images:
             zf.write(img_path, os.path.basename(img_path))
-    
     for d in temp_dirs_to_clean:
         shutil.rmtree(d, ignore_errors=True)
     
+    # The download URL should be a full URL for the frontend to use
     backend_url = request.host_url.rstrip('/')
     return jsonify({"downloadUrl": f"{backend_url}/download/{zip_filename}"})
 
-
-# --- Helper Functions (Unchanged) ---
+# --- Helper Functions (process_brushset, download_file, etc.) ---
 def process_brushset(filepath, original_filename_base):
     temp_extract_dir = os.path.join('uploads', f"extract_{uuid.uuid4().hex}")
     os.makedirs(temp_extract_dir, exist_ok=True)
     renamed_image_paths = []
-    output_dir = os.path.join('uploads', f"processed_{uuid.uuid4().hex}")
-    os.makedirs(output_dir, exist_ok=True)
     try:
         with zipfile.ZipFile(filepath, 'r') as brushset_zip:
             brushset_zip.extractall(temp_extract_dir)
@@ -138,6 +145,8 @@ def process_brushset(filepath, original_filename_base):
                     except (IOError, SyntaxError):
                         continue
         image_files.sort()
+        output_dir = os.path.join('uploads', f"processed_{uuid.uuid4().hex}")
+        os.makedirs(output_dir, exist_ok=True)
         for i, img_path in enumerate(image_files):
             new_filename = f"{original_filename_base}_{i + 1}.png"
             new_filepath = os.path.join(output_dir, new_filename)
@@ -145,7 +154,7 @@ def process_brushset(filepath, original_filename_base):
             renamed_image_paths.append(new_filepath)
         return renamed_image_paths, None, output_dir
     except zipfile.BadZipFile:
-        return None, "A provided file seems to be corrupted or isn't a valid .brushset.", output_dir
+        return None, "A provided file seems to be corrupted or isn't a valid .brushset.", None
     finally:
         shutil.rmtree(temp_extract_dir, ignore_errors=True)
 
