@@ -7,8 +7,6 @@ from werkzeug.utils import secure_filename
 from PIL import Image
 from supabase import create_client, Client
 from flask_cors import CORS
-# We need the logging library to be imported at the top level
-import logging
 
 # --- Flask App Initialization ---
 app = Flask(__name__)
@@ -27,16 +25,19 @@ allowed_origins = [
 ]
 CORS(app, origins=allowed_origins, supports_credentials=True )
 
-# --- License Check Route (Unchanged) ---
+# --- License Check Route (with added error handling) ---
 @app.route('/check-license', methods=['POST'])
 def check_license():
     data = request.get_json()
     if not data or 'licenseKey' not in data:
-        return jsonify({"message": "Invalid request."}), 400
+        return jsonify({"message": "Invalid request: Missing license key."}), 400
     
     license_key = data['licenseKey']
     try:
+        # This call was already in a try/except block, which is good.
         response = supabase.rpc('get_license_status', {'p_license_key': license_key}).execute()
+        
+        # Add a check for empty data, which can happen with valid but non-existent keys
         if not response.data:
             return jsonify({"isValid": False, "message": "License key not found."}), 404
         
@@ -45,50 +46,38 @@ def check_license():
             "isValid": result.get('is_valid'),
             "credits": result.get('sessions_remaining'),
             "message": result.get('message')
-        })
-    except Exception as e:
-        print(f"Supabase RPC error on /check-license: {e}")
-        return jsonify({"message": "Could not validate license due to a server error."}), 500
+        }), 200
 
-# --- Main Conversion Route (with your new logging) ---
+    except Exception as e:
+        # This will catch network errors or unexpected Supabase issues
+        print(f"CRITICAL ERROR in /check-license: {e}")
+        return jsonify({"message": "A server error occurred while validating the license."}), 500
+
+# --- Main Conversion Route (with CRITICAL error handling added) ---
 @app.route('/convert', methods=['POST'])
 def convert_files():
-    # --- START: Enhanced Logging ---
-    logging.basicConfig(level=logging.INFO) # Ensures logs are captured
-
     license_key = request.form.get('licenseKey')
     if not license_key:
         return jsonify({"message": "Missing license key."}), 401
 
-    # --- THIS IS THE FUNCTION NAME TO VERIFY ---
-    # Make sure this is the name of the NEW, corrected function in Supabase.
-    # For example: 'use_one_credit'
-    function_to_call = 'decrement_license' 
-    
-    logging.info(f"--- DIAGNOSTIC LOG: Attempting to call RPC function: '{function_to_call}' ---")
-    # --- END: Enhanced Logging ---
-
+    # --- MODIFICATION: ADDED ROBUST TRY/EXCEPT BLOCK ---
+    # This is the most important change. It prevents the app from crashing.
     try:
-        # Use the variable here to make it easy to change
-        response = supabase.rpc(function_to_call, {'p_license_key': license_key}).execute()
+        decrement_response = supabase.rpc('decrement_license', {'p_license_key': license_key}).execute()
         
-        # --- START: Detailed Response Logging ---
-        logging.info(f"Supabase RPC call successful. Response data: {response.data}")
-        # --- END: Detailed Response Logging ---
-
-        if not response.data or not response.data[0].get('success'):
-             message = response.data[0].get('message', 'Invalid or expired license.')
-             logging.warning(f"RPC call to '{function_to_call}' was not successful. Message: {message}")
-             return jsonify({"message": message}), 403
+        # Check if the RPC call itself returned data and if the operation was successful
+        if not decrement_response.data or not decrement_response.data[0].get('success'):
+             # Get the specific message from the database function (e.g., "No credits left.")
+             message = decrement_response.data[0].get('message', 'Invalid license or no credits remaining.')
+             return jsonify({"message": message}), 403 # 403 Forbidden is appropriate here
 
     except Exception as e:
-        # --- START: Critical Error Logging ---
-        # This will log the full, detailed traceback of the PostgreSQL error
-        logging.error(f"--- DIAGNOSTIC LOG: Supabase RPC error calling '{function_to_call}' ---", exc_info=True)
-        # --- END: Critical Error Logging ---
-        return jsonify({"message": "Could not validate license. Please try again."}), 500
+        # If the supabase.rpc call itself fails (e.g., network, permissions), this will catch it.
+        print(f"CRITICAL ERROR in /convert during decrement: {e}")
+        # Return a clear JSON error instead of crashing
+        return jsonify({"message": "Failed to update credits due to a database error. Please try again."}), 500
+    # --- END MODIFICATION ---
 
-    # ... (the rest of your file processing code remains unchanged) ...
     if 'files' not in request.files:
         return jsonify({"message": "No files were uploaded."}), 400
     files = request.files.getlist('files')
@@ -135,7 +124,6 @@ def convert_files():
     
     backend_url = request.host_url.rstrip('/')
     return jsonify({"downloadUrl": f"{backend_url}/download/{zip_filename}"})
-
 
 # --- Helper Functions (Unchanged) ---
 def process_brushset(filepath, original_filename_base):
