@@ -6,7 +6,6 @@ from flask import Flask, request, jsonify, send_from_directory
 from werkzeug.utils import secure_filename
 from PIL import Image
 from supabase import create_client, Client
-# 1. Import the CORS extension
 from flask_cors import CORS
 
 # --- Flask App Initialization ---
@@ -19,28 +18,24 @@ if not SUPABASE_URL or not SUPABASE_KEY:
     raise ValueError("Supabase URL and Service Key must be set in environment variables.")
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
-# --- CORS Configuration using Flask-Cors ---
-# 2. Define the list of allowed frontend origins
+# --- CORS Configuration ---
 allowed_origins = [
-    "https://procreate-landing-page-sandbox.onrender.com", # Your SANDBOX frontend
-    "https://procreate-landing-page.onrender.com"        # Your PRODUCTION frontend
+    "https://procreate-landing-page-sandbox.onrender.com",
+    "https://procreate-landing-page.onrender.com"
 ]
-
-# 3. Initialize the CORS extension
-# This enables CORS for all routes, but ONLY for the origins listed above.
-CORS(app, origins=allowed_origins, supports_credentials=True  )
+CORS(app, origins=allowed_origins, supports_credentials=True )
 
 # --- License Check Route ---
-# We no longer need to handle 'OPTIONS' manually; flask-cors does it for us.
 @app.route('/check-license', methods=['POST'])
 def check_license():
     data = request.get_json()
     if not data or 'licenseKey' not in data:
-        return jsonify({"message": "Invalid request."}), 400
+        return jsonify({"message": "Invalid request: Missing license key."}), 400
     
     license_key = data['licenseKey']
     try:
         response = supabase.rpc('get_license_status', {'p_license_key': license_key}).execute()
+        
         if not response.data:
             return jsonify({"isValid": False, "message": "License key not found."}), 404
         
@@ -49,27 +44,30 @@ def check_license():
             "isValid": result.get('is_valid'),
             "credits": result.get('sessions_remaining'),
             "message": result.get('message')
-        })
+        }), 200
+
     except Exception as e:
-        print(f"Supabase RPC error on /check-license: {e}")
-        return jsonify({"message": "Could not validate license due to a server error."}), 500
+        print(f"CRITICAL ERROR in /check-license: {e}")
+        return jsonify({"message": "A server error occurred while validating the license."}), 500
 
 # --- Main Conversion Route ---
-# We no longer need to handle 'OPTIONS' manually here either.
 @app.route('/convert', methods=['POST'])
 def convert_files():
     license_key = request.form.get('licenseKey')
     if not license_key:
         return jsonify({"message": "Missing license key."}), 401
 
+    # This try/except block is critical for stability.
     try:
-        response = supabase.rpc('decrement_license', {'p_license_key': license_key}).execute()
-        if not response.data or not response.data[0].get('success'):
-             message = response.data[0].get('message', 'Invalid or expired license.')
+        decrement_response = supabase.rpc('decrement_license', {'p_license_key': license_key}).execute()
+        
+        if not decrement_response.data or not decrement_response.data[0].get('success'):
+             message = decrement_response.data[0].get('message', 'Invalid license or no credits remaining.')
              return jsonify({"message": message}), 403
+
     except Exception as e:
-        print(f"Supabase RPC error during conversion: {e}")
-        return jsonify({"message": "Could not validate license. Please try again."}), 500
+        print(f"CRITICAL ERROR in /convert during decrement: {e}")
+        return jsonify({"message": "Failed to update credits due to a database error. Please try again."}), 500
 
     if 'files' not in request.files:
         return jsonify({"message": "No files were uploaded."}), 400
@@ -82,13 +80,10 @@ def convert_files():
     UPLOAD_FOLDER = 'uploads'
     os.makedirs(UPLOAD_FOLDER, exist_ok=True)
     
-    # --- MODIFICATION START: Capture the first brushset name for the zip file ---
-    first_brushset_name = "Conversion" # Default name
+    first_brushset_name = "Conversion"
     if files and files[0].filename:
-        # Secure the filename and remove the .brushset extension
         safe_name = secure_filename(files[0].filename)
         first_brushset_name = os.path.splitext(safe_name)[0]
-    # --- MODIFICATION END ---
 
     for file in files:
         if file and file.filename.endswith('.brushset'):
@@ -107,12 +102,9 @@ def convert_files():
     if not all_processed_images:
         return jsonify({"message": "No valid stamps (min 1024x1024) were found."}), 400
 
-    # --- MODIFICATION START: Use the new dynamic filename ---
-    # If multiple files were uploaded, add a suffix like "-and-more"
     suffix = "-and-more" if len(files) > 1 else ""
     zip_base_filename = f"ArtyPacks_{first_brushset_name}{suffix}.zip"
-    zip_filename = secure_filename(zip_base_filename) # Final sanitization
-    # --- MODIFICATION END ---
+    zip_filename = secure_filename(zip_base_filename)
     
     zip_filepath = os.path.join(UPLOAD_FOLDER, zip_filename)
     with zipfile.ZipFile(zip_filepath, 'w') as zf:
@@ -121,11 +113,10 @@ def convert_files():
     for d in temp_dirs_to_clean:
         shutil.rmtree(d, ignore_errors=True)
     
-    # The download URL should be a full URL for the frontend to use
     backend_url = request.host_url.rstrip('/')
     return jsonify({"downloadUrl": f"{backend_url}/download/{zip_filename}"})
 
-# --- Helper Functions (process_brushset, download_file, etc.) ---
+# --- Helper Functions (Unchanged) ---
 def process_brushset(filepath, original_filename_base):
     temp_extract_dir = os.path.join('uploads', f"extract_{uuid.uuid4().hex}")
     os.makedirs(temp_extract_dir, exist_ok=True)
