@@ -9,7 +9,7 @@ from supabase import create_client, Client
 from flask_cors import CORS
 
 # --- Flask App Initialization ---
-app = Flask(__name__)
+app = Flask(__name__ )
 
 # --- Supabase Configuration ---
 SUPABASE_URL = os.environ.get('SUPABASE_URL')
@@ -18,6 +18,14 @@ if not SUPABASE_URL or not SUPABASE_KEY:
     raise ValueError("Supabase URL and Service Key must be set in environment variables.")
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
+# --- THIS IS THE NEW, CRITICAL CONFIGURATION ---
+# Get the public URL from the environment variable we just set in Render.
+BACKEND_PUBLIC_URL = os.environ.get('BACKEND_PUBLIC_URL')
+if not BACKEND_PUBLIC_URL:
+    # Provide a fallback for local development if you want, otherwise raise an error.
+    # For production, it's better to fail fast if the variable is missing.
+    raise ValueError("BACKEND_PUBLIC_URL environment variable is not set.")
+
 # --- CORS Configuration ---
 allowed_origins = [
     "https://procreate-landing-page-sandbox.onrender.com",
@@ -25,19 +33,16 @@ allowed_origins = [
 ]
 CORS(app, origins=allowed_origins, supports_credentials=True )
 
-# --- License Check Route (with added error handling) ---
+# --- License Check Route ---
 @app.route('/check-license', methods=['POST'])
 def check_license():
     data = request.get_json()
     if not data or 'licenseKey' not in data:
-        return jsonify({"message": "Invalid request: Missing license key."}), 400
+        return jsonify({"message": "Invalid request."}), 400
     
     license_key = data['licenseKey']
     try:
-        # This call was already in a try/except block, which is good.
         response = supabase.rpc('get_license_status', {'p_license_key': license_key}).execute()
-        
-        # Add a check for empty data, which can happen with valid but non-existent keys
         if not response.data:
             return jsonify({"isValid": False, "message": "License key not found."}), 404
         
@@ -46,37 +51,26 @@ def check_license():
             "isValid": result.get('is_valid'),
             "credits": result.get('sessions_remaining'),
             "message": result.get('message')
-        }), 200
-
+        })
     except Exception as e:
-        # This will catch network errors or unexpected Supabase issues
-        print(f"CRITICAL ERROR in /check-license: {e}")
-        return jsonify({"message": "A server error occurred while validating the license."}), 500
+        print(f"Supabase RPC error on /check-license: {e}")
+        return jsonify({"message": "Could not validate license due to a server error."}), 500
 
-# --- Main Conversion Route (with CRITICAL error handling added) ---
+# --- Main Conversion Route ---
 @app.route('/convert', methods=['POST'])
 def convert_files():
     license_key = request.form.get('licenseKey')
     if not license_key:
         return jsonify({"message": "Missing license key."}), 401
 
-    # --- MODIFICATION: ADDED ROBUST TRY/EXCEPT BLOCK ---
-    # This is the most important change. It prevents the app from crashing.
     try:
-        decrement_response = supabase.rpc('decrement_license', {'p_license_key': license_key}).execute()
-        
-        # Check if the RPC call itself returned data and if the operation was successful
-        if not decrement_response.data or not decrement_response.data[0].get('success'):
-             # Get the specific message from the database function (e.g., "No credits left.")
-             message = decrement_response.data[0].get('message', 'Invalid license or no credits remaining.')
-             return jsonify({"message": message}), 403 # 403 Forbidden is appropriate here
-
+        response = supabase.rpc('decrement_license', {'p_license_key': license_key}).execute()
+        if not response.data or not response.data[0].get('success'):
+             message = response.data[0].get('message', 'Invalid or expired license.')
+             return jsonify({"message": message}), 403
     except Exception as e:
-        # If the supabase.rpc call itself fails (e.g., network, permissions), this will catch it.
-        print(f"CRITICAL ERROR in /convert during decrement: {e}")
-        # Return a clear JSON error instead of crashing
-        return jsonify({"message": "Failed to update credits due to a database error. Please try again."}), 500
-    # --- END MODIFICATION ---
+        print(f"Supabase RPC error during conversion: {e}")
+        return jsonify({"message": "Could not validate license. Please try again."}), 500
 
     if 'files' not in request.files:
         return jsonify({"message": "No files were uploaded."}), 400
@@ -122,8 +116,9 @@ def convert_files():
     for d in temp_dirs_to_clean:
         shutil.rmtree(d, ignore_errors=True)
     
-    backend_url = request.host_url.rstrip('/')
-    return jsonify({"downloadUrl": f"{backend_url}/download/{zip_filename}"})
+    # --- THIS IS THE CORRECTED CODE ---
+    # We now use the reliable public URL from our environment variable.
+    return jsonify({"downloadUrl": f"{BACKEND_PUBLIC_URL}/download/{zip_filename}"})
 
 # --- Helper Functions (Unchanged) ---
 def process_brushset(filepath, original_filename_base):
