@@ -9,7 +9,7 @@ from supabase import create_client, Client
 from flask_cors import CORS
 
 # --- Flask App Initialization ---
-app = Flask(__name__ )
+app = Flask(__name__)
 
 # --- Supabase Configuration ---
 SUPABASE_URL = os.environ.get('SUPABASE_URL')
@@ -18,13 +18,13 @@ if not SUPABASE_URL or not SUPABASE_KEY:
     raise ValueError("Supabase URL and Service Key must be set in environment variables.")
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
-# --- THIS IS THE NEW, CRITICAL CONFIGURATION ---
-# Get the public URL from the environment variable we just set in Render.
-BACKEND_PUBLIC_URL = os.environ.get('BACKEND_PUBLIC_URL')
-if not BACKEND_PUBLIC_URL:
-    # Provide a fallback for local development if you want, otherwise raise an error.
-    # For production, it's better to fail fast if the variable is missing.
-    raise ValueError("BACKEND_PUBLIC_URL environment variable is not set.")
+# --- THIS IS THE ROBUST, NON-CRASHING CONFIGURATION ---
+# Try to get the public URL from the environment variable.
+# If it's missing, fall back to a sensible default to prevent crashing.
+BACKEND_PUBLIC_URL = os.environ.get(
+    'BACKEND_PUBLIC_URL', 
+    'https://artypacks-converter-backend-SANDBOX.onrender.com'
+ )
 
 # --- CORS Configuration ---
 allowed_origins = [
@@ -116,8 +116,6 @@ def convert_files():
     for d in temp_dirs_to_clean:
         shutil.rmtree(d, ignore_errors=True)
     
-    # --- THIS IS THE CORRECTED CODE ---
-    # We now use the reliable public URL from our environment variable.
     return jsonify({"downloadUrl": f"{BACKEND_PUBLIC_URL}/download/{zip_filename}"})
 
 # --- Helper Functions (Unchanged) ---
