@@ -24,14 +24,14 @@ supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 BACKEND_PUBLIC_URL = os.environ.get(
     'BACKEND_PUBLIC_URL', 
     'https://artypacks-converter-backend-SANDBOX.onrender.com'
- )
+  )
 
 # --- CORS Configuration ---
 allowed_origins = [
     "https://procreate-landing-page-sandbox.onrender.com",
     "https://procreate-landing-page.onrender.com"
 ]
-CORS(app, origins=allowed_origins, supports_credentials=True )
+CORS(app, origins=allowed_origins, supports_credentials=True  )
 
 # --- License Check Route ---
 @app.route('/check-license', methods=['POST'])
