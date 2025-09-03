@@ -6,6 +6,7 @@ from flask import Flask, request, jsonify, send_from_directory
 from werkzeug.utils import secure_filename
 from PIL import Image
 from supabase import create_client, Client
+# 1. Import the CORS extension
 from flask_cors import CORS
 
 # --- Flask App Initialization ---
@@ -18,20 +19,15 @@ if not SUPABASE_URL or not SUPABASE_KEY:
     raise ValueError("Supabase URL and Service Key must be set in environment variables.")
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
-# --- THIS IS THE ROBUST, NON-CRASHING CONFIGURATION ---
-# Try to get the public URL from the environment variable.
-# If it's missing, fall back to a sensible default to prevent crashing.
-BACKEND_PUBLIC_URL = os.environ.get(
-    'BACKEND_PUBLIC_URL', 
-    'https://artypacks-converter-backend-SANDBOX.onrender.com'
-  )
-
-# --- CORS Configuration ---
+# --- CORS Configuration using Flask-Cors ---
+# 2. Define the list of allowed frontend origins
 allowed_origins = [
-    "https://procreate-landing-page-sandbox.onrender.com",
-    "https://procreate-landing-page.onrender.com"
+    "https://procreate-landing-page-sandbox.onrender.com", # Your SANDBOX frontend
+    "https://procreate-landing-page.onrender.com"        # Your PRODUCTION frontend
 ]
-CORS(app, origins=allowed_origins, supports_credentials=True  )
+
+# 3. Initialize the CORS extension
+CORS(app, origins=allowed_origins, supports_credentials=True )
 
 # --- License Check Route ---
 @app.route('/check-license', methods=['POST'])
@@ -43,6 +39,8 @@ def check_license():
     license_key = data['licenseKey']
     try:
         response = supabase.rpc('get_license_status', {'p_license_key': license_key}).execute()
+        
+        # THIS IS THE CRITICAL FIX: Check for empty data from Supabase
         if not response.data:
             return jsonify({"isValid": False, "message": "License key not found."}), 404
         
@@ -64,6 +62,7 @@ def convert_files():
         return jsonify({"message": "Missing license key."}), 401
 
     try:
+        # This is the corrected call to the working function
         response = supabase.rpc('decrement_license', {'p_license_key': license_key}).execute()
         if not response.data or not response.data[0].get('success'):
              message = response.data[0].get('message', 'Invalid or expired license.')
@@ -116,9 +115,10 @@ def convert_files():
     for d in temp_dirs_to_clean:
         shutil.rmtree(d, ignore_errors=True)
     
-    return jsonify({"downloadUrl": f"{BACKEND_PUBLIC_URL}/download/{zip_filename}"})
+    backend_url = request.host_url.rstrip('/')
+    return jsonify({"downloadUrl": f"{backend_url}/download/{zip_filename}"})
 
-# --- Helper Functions (Unchanged) ---
+# --- Helper Functions (process_brushset, download_file, etc.) ---
 def process_brushset(filepath, original_filename_base):
     temp_extract_dir = os.path.join('uploads', f"extract_{uuid.uuid4().hex}")
     os.makedirs(temp_extract_dir, exist_ok=True)
