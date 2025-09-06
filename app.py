@@ -2,14 +2,12 @@ import os
 import uuid
 import zipfile
 import shutil
-import io
-from flask import Flask, request, jsonify
+from flask import Flask, request, jsonify, Blueprint
 from werkzeug.utils import secure_filename
 from PIL import Image
 from supabase import create_client, Client
 from flask_cors import CORS
-from datetime import datetime, timedelta
-from sqlalchemy import desc # *** THIS IS THE FIX FOR THE 404 CRASH ***
+from sqlalchemy import desc # THIS IS THE FIX FOR THE 404 CRASH
 
 # --- Flask App Initialization ---
 app = Flask(__name__)
@@ -26,133 +24,157 @@ allowed_origins = [
     "https://procreate-landing-page-sandbox.onrender.com",
     "https://procreate-landing-page.onrender.com"
 ]
-CORS(app, origins=allowed_origins, supports_credentials=True )
+# *** THIS IS THE FINAL FIX FOR THE CORS ERROR ***
+CORS(app, origins=allowed_origins, supports_credentials=True, resources={r"/api/*": {}} )
 
-# --- Main Conversion Route ---
-@app.route('/convert', methods=['POST'])
-def convert_files():
-    license_key = request.form.get('licenseKey')
-    original_filename = request.form.get('originalFilename', 'conversion.brushset')
-    file = request.files.get('file')
+# --- API Blueprint ---
+api = Blueprint('api', __name__, url_prefix='/api')
 
-    if not all([license_key, original_filename, file]):
-        return jsonify({"message": "Missing required form data."}), 400
-
-    try:
-        decrement_response = supabase.rpc('use_one_credit', {'p_license_key': license_key}).execute()
-        if not decrement_response.data or not decrement_response.data[0].get('success'):
-            message = decrement_response.data[0].get('message', 'Invalid license or no credits remaining.')
-            return jsonify({"message": message}), 403
-    except Exception as e:
-        return jsonify({"message": f"Database error during credit use: {str(e)}"}), 500
-
-    processed_images, error, temp_extract_dir = process_brushset(file)
-    if error:
-        if temp_extract_dir: shutil.rmtree(temp_extract_dir, ignore_errors=True)
-        return jsonify({"message": error}), 400
-
-    if not processed_images:
-        if temp_extract_dir: shutil.rmtree(temp_extract_dir, ignore_errors=True)
-        return jsonify({"message": "No valid stamps (min 1024x1024) were found in the brushset."}), 400
-
-    zip_buffer = io.BytesIO()
-    with zipfile.ZipFile(zip_buffer, 'w') as zf:
-        for i, img_path in enumerate(processed_images):
-            base_name = os.path.splitext(original_filename)[0]
-            zf.write(img_path, f"{base_name}_{i+1}.png")
-    
-    shutil.rmtree(os.path.dirname(processed_images[0]), ignore_errors=True)
-    zip_buffer.seek(0)
-
-    storage_path = f"{license_key}/{uuid.uuid4()}.zip"
-    try:
-        supabase.storage.from_('conversions').upload(storage_path, zip_buffer.getvalue(), {'contentType': 'application/zip'})
-        download_url = supabase.storage.from_('conversions').create_signed_url(storage_path, 60 * 60 * 48)['signedURL']
-        
-        supabase.table('conversions').insert({
-            'license_key': license_key,
-            'download_url': download_url,
-            'storage_path': storage_path,
-            'original_filename': original_filename
-        }).execute()
-
-        return jsonify({"downloadUrl": download_url})
-    except Exception as e:
-        return jsonify({"message": f"Error during file upload or history logging: {str(e)}"}), 500
-    finally:
-        if temp_extract_dir and os.path.exists(temp_extract_dir):
-            shutil.rmtree(temp_extract_dir, ignore_errors=True)
-
-# --- License Check and History Recovery Routes ---
-@app.route('/check-license', methods=['POST'])
+# --- License Check Route ---
+@api.route('/check-license', methods=['POST'])
 def check_license():
     data = request.get_json()
     if not data or 'licenseKey' not in data:
         return jsonify({"message": "Invalid request: Missing license key."}), 400
+    
+    license_key = data['licenseKey']
     try:
-        response = supabase.rpc('get_license_status', {'p_license_key': data['licenseKey']}).execute()
+        response = supabase.rpc('get_license_status', {'p_license_key': license_key}).execute()
         if not response.data:
             return jsonify({"isValid": False, "message": "License key not found."}), 404
-        return jsonify(response.data[0]), 200
+        result = response.data[0]
+        return jsonify({
+            "isValid": result.get('is_valid'),
+            "credits": result.get('sessions_remaining'),
+            "message": result.get('message')
+        }), 200
     except Exception as e:
-        return jsonify({"message": f"A server error occurred: {str(e)}"}), 500
+        print(f"CRITICAL ERROR in /check-license: {e}")
+        return jsonify({"message": "A server error occurred while validating the license."}), 500
 
-@app.route('/recover-link', methods=['POST'])
-def recover_link():
-    data = request.get_json()
-    license_key = data.get('licenseKey')
+# --- Main Conversion Route ---
+@api.route('/convert', methods=['POST'])
+def convert_files():
+    license_key = request.form.get('licenseKey')
     if not license_key:
-        return jsonify({"message": "Missing license key."}), 400
-    try:
-        forty_eight_hours_ago = (datetime.utcnow() - timedelta(hours=48)).isoformat()
-        response = supabase.table('conversions').select('*').eq('license_key', license_key).gte('created_at', forty_eight_hours_ago).order(desc('created_at')).execute()
-        return jsonify(response.data), 200
-    except Exception as e:
-        return jsonify({"message": f"Failed to fetch history: {str(e)}"}), 500
+        return jsonify({"message": "Missing license key."}), 401
 
-# --- Helper Functions ---
-def process_brushset(file_storage):
-    temp_extract_dir = os.path.join('temp', f"extract_{uuid.uuid4().hex}")
-    os.makedirs(temp_extract_dir, exist_ok=True)
     try:
-        with zipfile.ZipFile(file_storage, 'r') as brushset_zip:
-            brushset_zip.extractall(temp_extract_dir)
-        
-        image_files = []
-        for root, _, files in os.walk(temp_extract_dir):
-            for name in files:
-                if name.lower().endswith(('.png', '.jpg', '.jpeg')) and 'artwork.png' not in name.lower():
-                    try:
-                        img_path = os.path.join(root, name)
-                        with Image.open(img_path) as img:
-                            if img.width >= 1024 and img.height >= 1024:
-                                image_files.append(img_path)
-                    except (IOError, SyntaxError):
-                        continue
-        
-        image_files.sort()
-        if not image_files:
-            return [], None, temp_extract_dir
-
-        output_dir = os.path.join('temp', f"processed_{uuid.uuid4().hex}")
-        os.makedirs(output_dir, exist_ok=True)
-        renamed_image_paths = []
-        for img_path in image_files:
-            new_filepath = os.path.join(output_dir, os.path.basename(img_path))
-            shutil.copy(img_path, new_filepath)
-            renamed_image_paths.append(new_filepath)
-        
-        return renamed_image_paths, None, temp_extract_dir
-    except zipfile.BadZipFile:
-        return None, "A provided file seems to be corrupted or isn't a valid .brushset.", temp_extract_dir
+        decrement_response = supabase.rpc('use_one_credit', {'p_license_key': license_key}).execute()
+        if not decrement_response.data or not decrement_response.data[0].get('success'):
+             message = decrement_response.data[0].get('message', 'Invalid license or no credits remaining.')
+             return jsonify({"message": message}), 403
     except Exception as e:
-        return None, f"A critical error occurred during file processing: {str(e)}", temp_extract_dir
+        print(f"CRITICAL ERROR in /convert during credit use: {e}")
+        return jsonify({"message": "Failed to update credits due to a database error."}), 500
+
+    if 'file' not in request.files:
+        return jsonify({"message": "No file was uploaded."}), 400
+    file = request.files['file']
+    if file.filename == '':
+        return jsonify({"message": "No selected file."}), 400
+
+    temp_extract_dir = None
+    try:
+        if file and file.filename.endswith('.brushset'):
+            filename = secure_filename(file.filename)
+            temp_dir = 'temp'
+            os.makedirs(temp_dir, exist_ok=True)
+            filepath = os.path.join(temp_dir, filename)
+            file.save(filepath)
+            
+            base_name = os.path.splitext(filename)[0]
+            processed_images, error, temp_extract_dir = process_brushset(filepath, base_name)
+            
+            if error:
+                return jsonify({"message": error}), 400
+            if not processed_images:
+                return jsonify({"message": "No valid stamps (min 1024x1024) were found in the brushset."}), 400
+
+            zip_filename = f"ArtyPacks_{base_name}.zip"
+            zip_filepath = os.path.join(temp_dir, zip_filename)
+            
+            with zipfile.ZipFile(zip_filepath, 'w') as zf:
+                for img_path in processed_images:
+                    zf.write(img_path, os.path.basename(img_path))
+            
+            storage_path = f"{uuid.uuid4().hex}/{zip_filename}"
+            with open(zip_filepath, 'rb') as f:
+                supabase.storage.from_('conversions').upload(storage_path, f)
+            
+            download_url = supabase.storage.from_('conversions').get_public_url(storage_path)
+            
+            supabase.table('conversions').insert({
+                'license_key': license_key,
+                'original_filename': filename,
+                'download_url': download_url,
+                'storage_path': storage_path
+            }).execute()
+
+            os.remove(filepath)
+            os.remove(zip_filepath)
+
+            return jsonify({"downloadUrl": download_url})
+        else:
+            return jsonify({"message": "Invalid file type. Only .brushset files are allowed."}), 400
+    except Exception as e:
+        print(f"CRITICAL ERROR during file processing: {e}")
+        return jsonify({"message": f"A critical error occurred during conversion."}), 500
     finally:
         if temp_extract_dir and os.path.exists(temp_extract_dir):
             shutil.rmtree(temp_extract_dir, ignore_errors=True)
 
+# --- History Recovery Route ---
+@api.route('/recover-link', methods=['POST'])
+def recover_link():
+    data = request.get_json()
+    license_key = data.get('licenseKey')
+    if not license_key:
+        return jsonify([]), 200
+    
+    try:
+        response = supabase.table('conversions').select(
+            "original_filename, download_url, created_at"
+        ).eq('license_key', license_key).order('created_at', desc=True).limit(5).execute()
+        return jsonify(response.data), 200
+    except Exception as e:
+        print(f"History recovery error: {e}")
+        return jsonify([]), 200
+
+# --- Register Blueprint ---
+app.register_blueprint(api)
+
+# --- Helper Functions ---
+def process_brushset(filepath, original_filename_base):
+    temp_extract_dir = os.path.join('temp', f"processed_{uuid.uuid4().hex}")
+    os.makedirs(temp_extract_dir, exist_ok=True)
+    renamed_image_paths = []
+    try:
+        with zipfile.ZipFile(filepath, 'r') as brushset_zip:
+            image_files = [name for name in brushset_zip.namelist() if name.lower().endswith(('.png', '.jpg',jpeg')) and 'artwork.png' not in name.lower()]
+            image_files.sort()
+            
+            for i, img_name in enumerate(image_files):
+                with brushset_zip.open(img_name) as img_file:
+                    try:
+                        with Image.open(img_file) as img:
+                            if img.width >= 1024 and img.height >= 1024:
+                                new_filename = f"{original_filename_base}_{i + 1}.png"
+                                new_filepath = os.path.join(temp_extract_dir, new_filename)
+                                img.save(new_filepath)
+                                renamed_image_paths.append(new_filepath)
+                    except (IOError, SyntaxError):
+                        continue
+        return renamed_image_paths, None, temp_extract_dir
+    except zipfile.BadZipFile:
+        return None, "A provided file seems to be corrupted or isn't a valid .brushset.", temp_extract_dir
+    except Exception as e:
+        print(f"Error in process_brushset: {e}")
+        return None, "Failed to process the brushset file.", temp_extract_dir
+
 @app.route('/')
 def index():
+    # Health check route for uptime monitors
     return "Artypacks Converter Backend is running."
 
 if __name__ == '__main__':
