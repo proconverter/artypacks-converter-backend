@@ -151,7 +151,8 @@ def process_brushset(filepath, original_filename_base):
     renamed_image_paths = []
     try:
         with zipfile.ZipFile(filepath, 'r') as brushset_zip:
-            image_files = [name for name in brushset_zip.namelist() if name.lower().endswith(('.png', '.jpg',jpeg')) and 'artwork.png' not in name.lower()]
+            # *** THIS IS THE CORRECTED LINE WITH '.jpeg' ***
+            image_files = [name for name in brushset_zip.namelist() if name.lower().endswith(('.png', '.jpg', '.jpeg')) and 'artwork.png' not in name.lower()]
             image_files.sort()
             
             for i, img_name in enumerate(image_files):
