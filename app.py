@@ -60,7 +60,6 @@ def convert_files():
             base_name = os.path.splitext(original_filename)[0]
             zf.write(img_path, f"{base_name}_{i+1}.png")
     
-    # *** THIS IS THE FIX: Cleanup is moved AFTER the loop is finished ***
     shutil.rmtree(os.path.dirname(processed_images[0]), ignore_errors=True)
     zip_buffer.seek(0)
 
