@@ -8,7 +8,7 @@ from werkzeug.utils import secure_filename
 from PIL import Image
 from supabase import create_client, Client
 from flask_cors import CORS
-from datetime import datetime, timedelta # *** THIS IS THE FIX FOR THE 404 CRASH ***
+from datetime import datetime, timedelta
 
 # --- Flask App Initialization ---
 app = Flask(__name__)
@@ -38,7 +38,6 @@ def convert_files():
         return jsonify({"message": "Missing required form data."}), 400
 
     try:
-        # Use the new 'use_one_credit' function
         decrement_response = supabase.rpc('use_one_credit', {'p_license_key': license_key}).execute()
         if not decrement_response.data or not decrement_response.data[0].get('success'):
             message = decrement_response.data[0].get('message', 'Invalid license or no credits remaining.')
@@ -60,7 +59,8 @@ def convert_files():
         for i, img_path in enumerate(processed_images):
             base_name = os.path.splitext(original_filename)[0]
             zf.write(img_path, f"{base_name}_{i+1}.png")
-            os.remove(img_path)
+    
+    # *** THIS IS THE FIX: Cleanup is moved AFTER the loop is finished ***
     shutil.rmtree(os.path.dirname(processed_images[0]), ignore_errors=True)
     zip_buffer.seek(0)
 
@@ -80,7 +80,8 @@ def convert_files():
     except Exception as e:
         return jsonify({"message": f"Error during file upload or history logging: {str(e)}"}), 500
     finally:
-        if temp_extract_dir: shutil.rmtree(temp_extract_dir, ignore_errors=True)
+        if temp_extract_dir and os.path.exists(temp_extract_dir):
+            shutil.rmtree(temp_extract_dir, ignore_errors=True)
 
 # --- License Check and History Recovery Routes ---
 @app.route('/check-license', methods=['POST'])
