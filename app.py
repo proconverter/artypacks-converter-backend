@@ -160,4 +160,7 @@ def index():
 if __name__ == '__main__':
     if not os.path.exists('temp'):
         os.makedirs('temp')
-    app.run(debug=True, port=5001)
+    
+    # *** THIS IS THE FINAL FIX FOR RENDER DEPLOYMENT ***
+    port = int(os.environ.get("PORT", 5001))
+    app.run(debug=True, host='0.0.0.0', port=port)
