@@ -163,8 +163,6 @@ def process_brushset(filepath):
             if not image_files:
                 return None, "No valid stamp images were found in the brushset."
 
-            # *** THIS IS THE DEFINITIVE FIX ***
-            # 1. Create the desired folder name
             original_brushset_name = os.path.splitext(os.path.basename(filepath))[0]
             root_folder_name = f"ArtyPacks.app_{original_brushset_name}"
 
@@ -179,11 +177,9 @@ def process_brushset(filepath):
                         
                         img_data.seek(0)
                         
-                        # 2. Create the full path for the file INSIDE the zip, including the folder
                         image_filename_in_zip = f"{root_folder_name}_{i + 1}.png"
                         full_path_in_zip = os.path.join(root_folder_name, image_filename_in_zip)
                         
-                        # 3. Write the file to the zip using the full path
                         zf.writestr(full_path_in_zip, img_data.read())
             
             zip_buffer.seek(0)
@@ -194,8 +190,10 @@ def process_brushset(filepath):
         print(f"Error in process_brushset: {e}")
         return None, "Failed to process the brushset file."
     finally:
+        # *** THIS IS THE FIX ***
+        # This block should ONLY clean up the directory it creates (temp_extract_dir)
         if os.path.exists(temp_extract_dir):
-            shutil.rmtree(temp_dir, ignore_errors=True)
+            shutil.rmtree(temp_extract_dir, ignore_errors=True)
 
 @app.route('/')
 def index():
