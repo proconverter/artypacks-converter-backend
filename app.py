@@ -80,7 +80,6 @@ def convert_files():
             if error:
                 return jsonify({"message": error}), 400
 
-            # *** THIS IS THE FIX: Add a timestamp to the filename ***
             base_name = os.path.splitext(original_filename)[0]
             timestamp = datetime.now(timezone.utc).strftime("%Y%m%d%H%M%S")
             zip_filename_for_storage = f"ArtyPacks.app_{base_name}_{timestamp}.zip"
@@ -135,4 +134,82 @@ def check_license():
             }
             return jsonify(response_data), 200
     except Exception as e:
-        print(f"CRITICAL ERROR in /check-license: {e
+        # *** THIS IS THE FIX: Correctly formatted print statement ***
+        print(f"CRITICAL ERROR in /check-license: {e}")
+        return jsonify({"message": "A server error occurred while validating the license."}), 500
+
+@app.route('/recover-link', methods=['POST'])
+def recover_link():
+    data = request.get_json()
+    license_key = data.get('licenseKey')
+    if not license_key:
+        return jsonify({"message": "License key is required."}), 400
+
+    try:
+        with engine.connect() as connection:
+            query = text("""
+                SELECT original_filename, download_url 
+                FROM conversions 
+                WHERE license_key = :key 
+                AND created_at >= NOW() - INTERVAL '60 minutes'
+                ORDER BY created_at DESC 
+                LIMIT 1
+            """)
+            result = connection.execute(query, {'key': license_key}).fetchone()
+
+            if result:
+                response_data = {
+                    "original_filename": result[0],
+                    "download_url": result[1]
+                }
+                return jsonify(response_data), 200
+            else:
+                return jsonify({"message": "No recent conversion found for this license."}), 404
+    except Exception as e:
+        print(f"CRITICAL ERROR in /recover-link: {e}")
+        return jsonify({"message": "A server error occurred while recovering the link."}), 500
+
+# --- Helper Functions ---
+def process_brushset(filepath):
+    temp_extract_dir = os.path.join('temp', f"extract_{uuid.uuid4().hex}")
+    os.makedirs(temp_extract_dir, exist_ok=True)
+    
+    try:
+        with zipfile.ZipFile(filepath, 'r') as brushset_zip:
+            image_files = [name for name in brushset_zip.namelist() if name.lower().endswith(('.png', '.jpg', '.jpeg')) and 'artwork.png' not in name.lower()]
+            if not image_files:
+                return None, "No valid stamp images were found in the brushset."
+
+            original_brushset_name = os.path.splitext(os.path.basename(filepath))[0]
+            root_folder_name = f"ArtyPacks.app_{original_brushset_name}"
+
+            zip_buffer = io.BytesIO()
+            with zipfile.ZipFile(zip_buffer, 'w', zipfile.ZIP_DEFLATED) as zf:
+                for i, image_file_name in enumerate(image_files):
+                    with brushset_zip.open(image_file_name) as img_file:
+                        img_data = io.BytesIO(img_file.read())
+                        with Image.open(img_data) as img:
+                            if img.width < 1024 or img.height < 1024:
+                                continue
+                        
+                        img_data.seek(0)
+                        
+                        image_filename_in_zip = f"{original_brushset_name}_{i + 1}.png"
+                        full_path_in_zip = os.path.join(root_folder_name, image_filename_in_zip)
+                        
+                        zf.writestr(full_path_in_zip, img_data.read())
+            
+            zip_buffer.seek(0)
+            return zip_buffer, None
+    except zipfile.BadZipFile:
+        return None, "A provided file seems to be corrupted or isn't a valid .brushset."
+    except Exception as e:
+        print(f"Error in process_brushset: {e}")
+        return None, "Failed to process the brushset file."
+    finally:
+        if os.path.exists(temp_extract_dir):
+            shutil.rmtree(temp_extract_dir, ignore_errors=True)
+
+@app.route('/')
+def index():
+    return "Artypacks Converter Backend is running."
