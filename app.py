@@ -86,7 +86,11 @@ def convert_files():
                 ), {'key': license_key, 'orig_name': original_filename, 'url': public_url})
                 connection.commit()
 
-            return jsonify({"downloadUrl": public_url})
+            # NEW CODE
+return jsonify({
+    "downloadUrl": public_url,
+    "originalFilename": original_filename 
+})
         else:
             return jsonify({"message": "Invalid file type. Only .brushset files are allowed."}), 400
     except Exception as e:
