@@ -44,7 +44,6 @@ def convert_files():
 
     try:
         with engine.connect() as connection:
-            # *** THIS IS THE FIX: Added the missing transaction block ***
             with connection.begin():
                 result = connection.execute(text("SELECT * FROM use_one_credit(:p_license_key)"), {'p_license_key': license_key}).fetchone()
             
@@ -112,7 +111,6 @@ def check_license():
     license_key = data['licenseKey']
     try:
         with engine.connect() as connection:
-            # This endpoint already had the correct transaction block
             with connection.begin():
                 result = connection.execute(text("SELECT * FROM get_license_status(:p_license_key)"), {'p_license_key': license_key}).fetchone()
             
@@ -139,6 +137,7 @@ def recover_link():
 
     try:
         with engine.connect() as connection:
+            # *** THIS IS THE FIX: Added the missing transaction block ***
             with connection.begin():
                 query = text("""
                     SELECT original_filename, download_url 
