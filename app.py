@@ -42,10 +42,11 @@ def convert_files():
     if not license_key:
         return jsonify({"message": "Missing license key."}), 401
 
+    # This try block was correct
     try:
         with engine.connect() as connection:
             result = connection.execute(text("SELECT * FROM use_one_credit(:p_license_key)"), {'p_license_key': license_key}).fetchone()
-            if not result or not result[0]: # Check the 'success' boolean
+            if not result or not result[0]:
                 message = result[1] if result else 'Invalid license or no credits remaining.'
                 return jsonify({"message": message}), 403
     except Exception as e:
@@ -61,6 +62,7 @@ def convert_files():
     temp_dir = os.path.join('temp', str(uuid.uuid4()))
     os.makedirs(temp_dir, exist_ok=True)
     
+    # *** THIS IS THE BLOCK WHERE I MADE THE MISTAKE ***
     try:
         if file and file.filename.endswith('.brushset'):
             original_filename = secure_filename(file.filename)
@@ -71,26 +73,23 @@ def convert_files():
             if error:
                 return jsonify({"message": error}), 400
 
-            # Upload to Supabase Storage
             zip_filename_for_storage = f"{uuid.uuid4().hex}.zip"
             supabase.storage.from_("conversions").upload(file=zip_buffer.getvalue(), path=zip_filename_for_storage, file_options={"content-type": "application/zip"})
             
-            # Get public URL
             public_url_data = supabase.storage.from_("conversions").get_public_url(zip_filename_for_storage)
             public_url = public_url_data
 
-            # Log conversion to the database
             with engine.connect() as connection:
                 connection.execute(text(
                     "INSERT INTO conversions (license_key, original_filename, download_url) VALUES (:key, :orig_name, :url)"
                 ), {'key': license_key, 'orig_name': original_filename, 'url': public_url})
                 connection.commit()
 
-            # NEW CODE
-return jsonify({
-    "downloadUrl": public_url,
-    "originalFilename": original_filename 
-})
+            # *** THIS IS THE FIX: The return statement MUST be inside the 'try' block ***
+            return jsonify({
+                "downloadUrl": public_url,
+                "originalFilename": original_filename
+            })
         else:
             return jsonify({"message": "Invalid file type. Only .brushset files are allowed."}), 400
     except Exception as e:
@@ -114,7 +113,6 @@ def check_license():
             if not result:
                 return jsonify({"isValid": False, "message": "License key not found."}), 404
             
-            # Manually map tuple to dictionary
             response_data = {
                 "isValid": result[0],
                 "sessions_remaining": result[1],
@@ -134,7 +132,6 @@ def recover_link():
 
     try:
         with engine.connect() as connection:
-            # Find the most recent conversion for this key within the last 60 minutes
             query = text("""
                 SELECT original_filename, download_url 
                 FROM conversions 
@@ -168,18 +165,15 @@ def process_brushset(filepath):
             if not image_files:
                 return None, "No valid stamp images were found in the brushset."
 
-            # Create an in-memory zip file
             zip_buffer = io.BytesIO()
             with zipfile.ZipFile(zip_buffer, 'w', zipfile.ZIP_DEFLATED) as zf:
                 for i, image_file_name in enumerate(image_files):
                     with brushset_zip.open(image_file_name) as img_file:
-                        # Check image dimensions without saving to disk
                         img_data = io.BytesIO(img_file.read())
                         with Image.open(img_data) as img:
                             if img.width < 1024 or img.height < 1024:
-                                continue # Skip small images
+                                continue
                         
-                        # Reset buffer position and write to zip
                         img_data.seek(0)
                         new_filename = f"{os.path.splitext(os.path.basename(filepath))[0]}_{i + 1}.png"
                         zf.writestr(new_filename, img_data.read())
