@@ -115,14 +115,11 @@ def check_license():
             if not result:
                 return jsonify({"isValid": False, "message": "License key not found."}), 404
             
-            # ==================================================================
-            # THIS IS THE FIX - The dictionary now correctly maps all 4 columns
-            # ==================================================================
             response_data = {
                 "isValid": result[0],
                 "sessions_remaining": result[1],
                 "message": result[2],
-                "user_type": result[3] # Correctly access the 4th item (index 3)
+                "user_type": result[3]
             }
             return jsonify(response_data), 200
     except Exception as e:
@@ -186,7 +183,8 @@ def process_brushset(filepath, original_filename):
                         new_filename_in_zip = f"{base_folder_name}/stamp_{i + 1}.png"
                         zf.writestr(new_filename_in_zip, img_data.read())
             
-            zip__buffer.seek(0)
+            # *** THIS IS THE FIX: Corrected variable name with one underscore ***
+            zip_buffer.seek(0)
             return zip_buffer, None
     except zipfile.BadZipFile:
         return None, "A provided file seems to be corrupted or isn't a valid .brushset."
