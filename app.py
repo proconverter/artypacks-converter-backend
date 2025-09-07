@@ -67,10 +67,7 @@ def convert_files():
             filepath = os.path.join(temp_dir, original_filename)
             file.save(filepath)
             
-            # *** THIS IS THE CHANGE ***
-            # Create the desired base name and pass it to the processing function
-            base_name = f"ArtyPacks.app_{os.path.splitext(original_filename)[0]}"
-            zip_buffer, error = process_brushset(filepath, base_name)
+            zip_buffer, error = process_brushset(filepath)
             
             if error:
                 return jsonify({"message": error}), 400
@@ -156,8 +153,7 @@ def recover_link():
         return jsonify({"message": "A server error occurred while recovering the link."}), 500
 
 # --- Helper Functions ---
-# *** THIS IS THE CHANGE ***
-def process_brushset(filepath, base_name):
+def process_brushset(filepath):
     temp_extract_dir = os.path.join('temp', f"extract_{uuid.uuid4().hex}")
     os.makedirs(temp_extract_dir, exist_ok=True)
     
@@ -166,6 +162,11 @@ def process_brushset(filepath, base_name):
             image_files = [name for name in brushset_zip.namelist() if name.lower().endswith(('.png', '.jpg', '.jpeg')) and 'artwork.png' not in name.lower()]
             if not image_files:
                 return None, "No valid stamp images were found in the brushset."
+
+            # *** THIS IS THE DEFINITIVE FIX ***
+            # 1. Create the desired folder name
+            original_brushset_name = os.path.splitext(os.path.basename(filepath))[0]
+            root_folder_name = f"ArtyPacks.app_{original_brushset_name}"
 
             zip_buffer = io.BytesIO()
             with zipfile.ZipFile(zip_buffer, 'w', zipfile.ZIP_DEFLATED) as zf:
@@ -177,10 +178,13 @@ def process_brushset(filepath, base_name):
                                 continue
                         
                         img_data.seek(0)
-                        # *** THIS IS THE CHANGE ***
-                        # Use the new base_name for the files inside the zip
-                        new_filename = f"{base_name}_{i + 1}.png"
-                        zf.writestr(new_filename, img_data.read())
+                        
+                        # 2. Create the full path for the file INSIDE the zip, including the folder
+                        image_filename_in_zip = f"{root_folder_name}_{i + 1}.png"
+                        full_path_in_zip = os.path.join(root_folder_name, image_filename_in_zip)
+                        
+                        # 3. Write the file to the zip using the full path
+                        zf.writestr(full_path_in_zip, img_data.read())
             
             zip_buffer.seek(0)
             return zip_buffer, None
@@ -191,7 +195,7 @@ def process_brushset(filepath, base_name):
         return None, "Failed to process the brushset file."
     finally:
         if os.path.exists(temp_extract_dir):
-            shutil.rmtree(temp_extract_dir, ignore_errors=True)
+            shutil.rmtree(temp_dir, ignore_errors=True)
 
 @app.route('/')
 def index():
