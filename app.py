@@ -44,11 +44,19 @@ def convert_files():
 
     try:
         with engine.connect() as connection:
-            result = connection.execute(text("SELECT * FROM use_one_credit(:p_license_key)"), {'p_license_key': license_key}).fetchone()
-            if not result or not result[0]:
-                message = result[1] if result else 'Invalid license or no credits remaining.'
-                return jsonify({"message": message}), 403
-            connection.commit()
+            # Begin a transaction
+            trans = connection.begin()
+            try:
+                result = connection.execute(text("SELECT * FROM use_one_credit(:p_license_key)"), {'p_license_key': license_key}).fetchone()
+                if not result or not result[0]:
+                    message = result[1] if result else 'Invalid license or no credits remaining.'
+                    trans.rollback() # Rollback if check fails
+                    return jsonify({"message": message}), 403
+                # If the check passes, commit the transaction
+                trans.commit()
+            except Exception:
+                trans.rollback()
+                raise # Re-raise the exception to be caught by the outer block
     except Exception as e:
         print(f"CRITICAL ERROR in /convert during credit use: {e}")
         return jsonify({"message": "Failed to update credits due to a database error."}), 500
@@ -68,20 +76,22 @@ def convert_files():
             filepath = os.path.join(temp_dir, original_filename)
             file.save(filepath)
             
-            zip_buffer, error = process_brushset(filepath, original_filename)
+            zip_buffer, error = process_brushset(filepath)
             if error:
                 return jsonify({"message": error}), 400
 
-            base_name = original_filename.replace('.brushset', '')
-            final_zip_filename = f"ArtyPacks.app_{base_name}.zip"
+            # *** THIS IS THE FIX: Add a timestamp to the filename ***
+            base_name = os.path.splitext(original_filename)[0]
+            timestamp = datetime.now(timezone.utc).strftime("%Y%m%d%H%M%S")
+            zip_filename_for_storage = f"ArtyPacks.app_{base_name}_{timestamp}.zip"
 
             supabase.storage.from_("conversions").upload(
-                file=zip_buffer.getvalue(), 
-                path=final_zip_filename,
+                file=zip_buffer.getvalue(),
+                path=zip_filename_for_storage,
                 file_options={"content-type": "application/zip"}
             )
             
-            public_url_data = supabase.storage.from_("conversions").get_public_url(final_zip_filename)
+            public_url_data = supabase.storage.from_("conversions").get_public_url(zip_filename_for_storage)
             public_url = public_url_data
 
             with engine.connect() as connection:
@@ -90,7 +100,10 @@ def convert_files():
                 ), {'key': license_key, 'orig_name': original_filename, 'url': public_url})
                 connection.commit()
 
-            return jsonify({"downloadUrl": public_url, "originalFilename": original_filename})
+            return jsonify({
+                "downloadUrl": public_url,
+                "originalFilename": original_filename
+            })
         else:
             return jsonify({"message": "Invalid file type. Only .brushset files are allowed."}), 400
     except Exception as e:
@@ -122,77 +135,4 @@ def check_license():
             }
             return jsonify(response_data), 200
     except Exception as e:
-        print(f"CRITICAL ERROR in /check-license: {e}")
-        return jsonify({"message": "A server error occurred while validating the license."}), 500
-
-@app.route('/recover-link', methods=['POST'])
-def recover_link():
-    data = request.get_json()
-    license_key = data.get('licenseKey')
-    if not license_key:
-        return jsonify({"message": "License key is required."}), 400
-
-    try:
-        with engine.connect() as connection:
-            query = text("""
-                SELECT original_filename, download_url 
-                FROM conversions 
-                WHERE license_key = :key 
-                AND created_at >= NOW() - INTERVAL '60 minutes'
-                ORDER BY created_at DESC 
-                LIMIT 1
-            """)
-            result = connection.execute(query, {'key': license_key}).fetchone()
-
-            if result:
-                response_data = {
-                    "original_filename": result[0],
-                    "download_url": result[1]
-                }
-                return jsonify(response_data), 200
-            else:
-                return jsonify({"message": "No recent conversion found for this license."}), 404
-    except Exception as e:
-        print(f"CRITICAL ERROR in /recover-link: {e}")
-        return jsonify({"message": "A server error occurred while recovering the link."}), 500
-
-# --- Helper Functions ---
-def process_brushset(filepath, original_filename):
-    temp_extract_dir = os.path.join('temp', f"extract_{uuid.uuid4().hex}")
-    os.makedirs(temp_extract_dir, exist_ok=True)
-    
-    try:
-        with zipfile.ZipFile(filepath, 'r') as brushset_zip:
-            image_files = [name for name in brushset_zip.namelist() if name.lower().endswith(('.png', '.jpg', '.jpeg')) and 'artwork.png' not in name.lower()]
-            if not image_files:
-                return None, "No valid stamp images were found in the brushset."
-
-            zip_buffer = io.BytesIO()
-            with zipfile.ZipFile(zip_buffer, 'w', zipfile.ZIP_DEFLATED) as zf:
-                base_folder_name = original_filename.replace('.brushset', '')
-                
-                for i, image_file_name in enumerate(image_files):
-                    with brushset_zip.open(image_file_name) as img_file:
-                        img_data = io.BytesIO(img_file.read())
-                        with Image.open(img_data) as img:
-                            if img.width < 1024 or img.height < 1024:
-                                continue
-                        
-                        img_data.seek(0)
-                        new_filename_in_zip = f"{base_folder_name}/stamp_{i + 1}.png"
-                        zf.writestr(new_filename_in_zip, img_data.read())
-            
-            zip_buffer.seek(0)
-            return zip_buffer, None
-    except zipfile.BadZipFile:
-        return None, "A provided file seems to be corrupted or isn't a valid .brushset."
-    except Exception as e:
-        print(f"Error in process_brushset: {e}")
-        return None, "Failed to process the brushset file."
-    finally:
-        if os.path.exists(temp_extract_dir):
-            shutil.rmtree(temp_extract_dir, ignore_errors=True)
-
-@app.route('/')
-def index():
-    return "Artypacks Converter Backend is running."
+        print(f"CRITICAL ERROR in /check-license: {e
