@@ -42,7 +42,6 @@ def convert_files():
     if not license_key:
         return jsonify({"message": "Missing license key."}), 401
 
-    # This try block was correct
     try:
         with engine.connect() as connection:
             result = connection.execute(text("SELECT * FROM use_one_credit(:p_license_key)"), {'p_license_key': license_key}).fetchone()
@@ -62,14 +61,17 @@ def convert_files():
     temp_dir = os.path.join('temp', str(uuid.uuid4()))
     os.makedirs(temp_dir, exist_ok=True)
     
-    # *** THIS IS THE BLOCK WHERE I MADE THE MISTAKE ***
     try:
         if file and file.filename.endswith('.brushset'):
             original_filename = secure_filename(file.filename)
             filepath = os.path.join(temp_dir, original_filename)
             file.save(filepath)
             
-            zip_buffer, error = process_brushset(filepath)
+            # *** THIS IS THE CHANGE ***
+            # Create the desired base name and pass it to the processing function
+            base_name = f"ArtyPacks.app_{os.path.splitext(original_filename)[0]}"
+            zip_buffer, error = process_brushset(filepath, base_name)
+            
             if error:
                 return jsonify({"message": error}), 400
 
@@ -85,7 +87,6 @@ def convert_files():
                 ), {'key': license_key, 'orig_name': original_filename, 'url': public_url})
                 connection.commit()
 
-            # *** THIS IS THE FIX: The return statement MUST be inside the 'try' block ***
             return jsonify({
                 "downloadUrl": public_url,
                 "originalFilename": original_filename
@@ -155,7 +156,8 @@ def recover_link():
         return jsonify({"message": "A server error occurred while recovering the link."}), 500
 
 # --- Helper Functions ---
-def process_brushset(filepath):
+# *** THIS IS THE CHANGE ***
+def process_brushset(filepath, base_name):
     temp_extract_dir = os.path.join('temp', f"extract_{uuid.uuid4().hex}")
     os.makedirs(temp_extract_dir, exist_ok=True)
     
@@ -175,7 +177,9 @@ def process_brushset(filepath):
                                 continue
                         
                         img_data.seek(0)
-                        new_filename = f"{os.path.splitext(os.path.basename(filepath))[0]}_{i + 1}.png"
+                        # *** THIS IS THE CHANGE ***
+                        # Use the new base_name for the files inside the zip
+                        new_filename = f"{base_name}_{i + 1}.png"
                         zf.writestr(new_filename, img_data.read())
             
             zip_buffer.seek(0)
