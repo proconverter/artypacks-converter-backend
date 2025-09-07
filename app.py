@@ -44,17 +44,12 @@ def convert_files():
 
     try:
         with engine.connect() as connection:
-            result = connection.execute(text("SELECT * FROM use_one_credit(:p_license_key)"), {'p_license_key': license_key}).fetchone()
+            with connection.begin():
+                result = connection.execute(text("SELECT * FROM use_one_credit(:p_license_key)"), {'p_license_key': license_key}).fetchone()
             
-            # Check if the function indicated failure
             if not result or not result[0]:
                 message = result[1] if result else 'Invalid license or no credits remaining.'
                 return jsonify({"message": message}), 403
-            
-            # *** THIS IS THE FIX ***
-            # If the check passes, commit the transaction to save the credit deduction
-            connection.commit()
-
     except Exception as e:
         print(f"CRITICAL ERROR in /convert during credit use: {e}")
         return jsonify({"message": "Failed to update credits due to a database error."}), 500
@@ -74,27 +69,29 @@ def convert_files():
             filepath = os.path.join(temp_dir, original_filename)
             file.save(filepath)
             
-            zip_buffer, error = process_brushset(filepath)
-            
+            zip_buffer, error = process_brushset(filepath, original_filename)
             if error:
                 return jsonify({"message": error}), 400
 
-            zip_filename_for_storage = f"{uuid.uuid4().hex}.zip"
-            supabase.storage.from_("conversions").upload(file=zip_buffer.getvalue(), path=zip_filename_for_storage, file_options={"content-type": "application/zip"})
+            base_name = original_filename.replace('.brushset', '')
+            final_zip_filename = f"ArtyPacks.app_{base_name}.zip"
+
+            supabase.storage.from_("conversions").upload(
+                file=zip_buffer.getvalue(), 
+                path=final_zip_filename,
+                file_options={"content-type": "application/zip"}
+            )
             
-            public_url_data = supabase.storage.from_("conversions").get_public_url(zip_filename_for_storage)
+            public_url_data = supabase.storage.from_("conversions").get_public_url(final_zip_filename)
             public_url = public_url_data
 
             with engine.connect() as connection:
-                connection.execute(text(
-                    "INSERT INTO conversions (license_key, original_filename, download_url) VALUES (:key, :orig_name, :url)"
-                ), {'key': license_key, 'orig_name': original_filename, 'url': public_url})
-                connection.commit()
+                with connection.begin():
+                    connection.execute(text(
+                        "INSERT INTO conversions (license_key, original_filename, download_url) VALUES (:key, :orig_name, :url)"
+                    ), {'key': license_key, 'orig_name': original_filename, 'url': public_url})
 
-            return jsonify({
-                "downloadUrl": public_url,
-                "originalFilename": original_filename
-            })
+            return jsonify({"downloadUrl": public_url, "originalFilename": original_filename})
         else:
             return jsonify({"message": "Invalid file type. Only .brushset files are allowed."}), 400
     except Exception as e:
@@ -118,10 +115,15 @@ def check_license():
             if not result:
                 return jsonify({"isValid": False, "message": "License key not found."}), 404
             
+            # ==================================================================
+            # THIS IS THE V2.0 UPDATE
+            # ==================================================================
+            # Map the tuple to a dictionary, now including user_type.
             response_data = {
                 "isValid": result[0],
-                "sessions_remaining": result[1],
-                "message": result[2]
+                "sessions_remaining": result[1], # Renaming for clarity on frontend
+                "message": result[2],
+                "user_type": result[3] # Add the new user_type field
             }
             return jsonify(response_data), 200
     except Exception as e:
@@ -160,7 +162,7 @@ def recover_link():
         return jsonify({"message": "A server error occurred while recovering the link."}), 500
 
 # --- Helper Functions ---
-def process_brushset(filepath):
+def process_brushset(filepath, original_filename):
     temp_extract_dir = os.path.join('temp', f"extract_{uuid.uuid4().hex}")
     os.makedirs(temp_extract_dir, exist_ok=True)
     
@@ -170,11 +172,10 @@ def process_brushset(filepath):
             if not image_files:
                 return None, "No valid stamp images were found in the brushset."
 
-            original_brushset_name = os.path.splitext(os.path.basename(filepath))[0]
-            root_folder_name = f"ArtyPacks.app_{original_brushset_name}"
-
             zip_buffer = io.BytesIO()
             with zipfile.ZipFile(zip_buffer, 'w', zipfile.ZIP_DEFLATED) as zf:
+                base_folder_name = original_filename.replace('.brushset', '')
+                
                 for i, image_file_name in enumerate(image_files):
                     with brushset_zip.open(image_file_name) as img_file:
                         img_data = io.BytesIO(img_file.read())
@@ -183,11 +184,8 @@ def process_brushset(filepath):
                                 continue
                         
                         img_data.seek(0)
-                        
-                        image_filename_in_zip = f"{root_folder_name}_{i + 1}.png"
-                        full_path_in_zip = os.path.join(root_folder_name, image_filename_in_zip)
-                        
-                        zf.writestr(full_path_in_zip, img_data.read())
+                        new_filename_in_zip = f"{base_folder_name}/stamp_{i + 1}.png"
+                        zf.writestr(new_filename_in_zip, img_data.read())
             
             zip_buffer.seek(0)
             return zip_buffer, None
