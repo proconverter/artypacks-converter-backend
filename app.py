@@ -3,7 +3,7 @@ import uuid
 import zipfile
 import shutil
 import io
-from flask import Flask, request, jsonify, send_from_directory
+from flask import Flask, request, jsonify
 from werkzeug.utils import secure_filename
 from PIL import Image
 from supabase import create_client, Client
@@ -33,7 +33,7 @@ allowed_origins = [
     "https://artypacks.app",
     "http://127.0.0.1:5500"
 ]
-CORS(app, resources={r"/*": {"origins": allowed_origins}}, supports_credentials=True  )
+CORS(app, resources={r"/*": {"origins": allowed_origins}}, supports_credentials=True )
 
 # --- Main Conversion Route ---
 @app.route('/convert', methods=['POST'])
@@ -48,7 +48,7 @@ def convert_files():
             if not result or not result[0]:
                 message = result[1] if result else 'Invalid license or no credits remaining.'
                 return jsonify({"message": message}), 403
-            connection.commit() # Using the old, working commit style
+            connection.commit()
     except Exception as e:
         print(f"CRITICAL ERROR in /convert during credit use: {e}")
         return jsonify({"message": "Failed to update credits due to a database error."}), 500
@@ -88,7 +88,7 @@ def convert_files():
                 connection.execute(text(
                     "INSERT INTO conversions (license_key, original_filename, download_url) VALUES (:key, :orig_name, :url)"
                 ), {'key': license_key, 'orig_name': original_filename, 'url': public_url})
-                connection.commit() # Using the old, working commit style
+                connection.commit()
 
             return jsonify({"downloadUrl": public_url, "originalFilename": original_filename})
         else:
