@@ -45,9 +45,16 @@ def convert_files():
     try:
         with engine.connect() as connection:
             result = connection.execute(text("SELECT * FROM use_one_credit(:p_license_key)"), {'p_license_key': license_key}).fetchone()
+            
+            # Check if the function indicated failure
             if not result or not result[0]:
                 message = result[1] if result else 'Invalid license or no credits remaining.'
                 return jsonify({"message": message}), 403
+            
+            # *** THIS IS THE FIX ***
+            # If the check passes, commit the transaction to save the credit deduction
+            connection.commit()
+
     except Exception as e:
         print(f"CRITICAL ERROR in /convert during credit use: {e}")
         return jsonify({"message": "Failed to update credits due to a database error."}), 500
@@ -190,8 +197,6 @@ def process_brushset(filepath):
         print(f"Error in process_brushset: {e}")
         return None, "Failed to process the brushset file."
     finally:
-        # *** THIS IS THE FIX ***
-        # This block should ONLY clean up the directory it creates (temp_extract_dir)
         if os.path.exists(temp_extract_dir):
             shutil.rmtree(temp_extract_dir, ignore_errors=True)
 
