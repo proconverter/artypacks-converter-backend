@@ -44,6 +44,7 @@ def convert_files():
 
     try:
         with engine.connect() as connection:
+            # *** THIS IS THE FIX: Added the missing transaction block ***
             with connection.begin():
                 result = connection.execute(text("SELECT * FROM use_one_credit(:p_license_key)"), {'p_license_key': license_key}).fetchone()
             
@@ -111,7 +112,10 @@ def check_license():
     license_key = data['licenseKey']
     try:
         with engine.connect() as connection:
-            result = connection.execute(text("SELECT * FROM get_license_status(:p_license_key)"), {'p_license_key': license_key}).fetchone()
+            # This endpoint already had the correct transaction block
+            with connection.begin():
+                result = connection.execute(text("SELECT * FROM get_license_status(:p_license_key)"), {'p_license_key': license_key}).fetchone()
+            
             if not result:
                 return jsonify({"isValid": False, "message": "License key not found."}), 404
             
@@ -135,15 +139,16 @@ def recover_link():
 
     try:
         with engine.connect() as connection:
-            query = text("""
-                SELECT original_filename, download_url 
-                FROM conversions 
-                WHERE license_key = :key 
-                AND created_at >= NOW() - INTERVAL '60 minutes'
-                ORDER BY created_at DESC 
-                LIMIT 1
-            """)
-            result = connection.execute(query, {'key': license_key}).fetchone()
+            with connection.begin():
+                query = text("""
+                    SELECT original_filename, download_url 
+                    FROM conversions 
+                    WHERE license_key = :key 
+                    AND created_at >= NOW() - INTERVAL '60 minutes'
+                    ORDER BY created_at DESC 
+                    LIMIT 1
+                """)
+                result = connection.execute(query, {'key': license_key}).fetchone()
 
             if result:
                 response_data = {
@@ -183,7 +188,6 @@ def process_brushset(filepath, original_filename):
                         new_filename_in_zip = f"{base_folder_name}/stamp_{i + 1}.png"
                         zf.writestr(new_filename_in_zip, img_data.read())
             
-            # *** THIS IS THE FIX: Corrected variable name with one underscore ***
             zip_buffer.seek(0)
             return zip_buffer, None
     except zipfile.BadZipFile:
