@@ -44,12 +44,11 @@ def convert_files():
 
     try:
         with engine.connect() as connection:
-            with connection.begin():
-                result = connection.execute(text("SELECT * FROM use_one_credit(:p_license_key)"), {'p_license_key': license_key}).fetchone()
-            
+            result = connection.execute(text("SELECT * FROM use_one_credit(:p_license_key)"), {'p_license_key': license_key}).fetchone()
             if not result or not result[0]:
                 message = result[1] if result else 'Invalid license or no credits remaining.'
                 return jsonify({"message": message}), 403
+            connection.commit() # Using the old, working commit style
     except Exception as e:
         print(f"CRITICAL ERROR in /convert during credit use: {e}")
         return jsonify({"message": "Failed to update credits due to a database error."}), 500
@@ -76,7 +75,6 @@ def convert_files():
             base_name = original_filename.replace('.brushset', '')
             final_zip_filename = f"ArtyPacks.app_{base_name}.zip"
 
-            # *** THIS IS THE FIX: The missing closing parenthesis has been added ***
             supabase.storage.from_("conversions").upload(
                 file=zip_buffer.getvalue(), 
                 path=final_zip_filename,
@@ -87,10 +85,10 @@ def convert_files():
             public_url = public_url_data
 
             with engine.connect() as connection:
-                with connection.begin():
-                    connection.execute(text(
-                        "INSERT INTO conversions (license_key, original_filename, download_url) VALUES (:key, :orig_name, :url)"
-                    ), {'key': license_key, 'orig_name': original_filename, 'url': public_url})
+                connection.execute(text(
+                    "INSERT INTO conversions (license_key, original_filename, download_url) VALUES (:key, :orig_name, :url)"
+                ), {'key': license_key, 'orig_name': original_filename, 'url': public_url})
+                connection.commit() # Using the old, working commit style
 
             return jsonify({"downloadUrl": public_url, "originalFilename": original_filename})
         else:
@@ -112,9 +110,7 @@ def check_license():
     license_key = data['licenseKey']
     try:
         with engine.connect() as connection:
-            with connection.begin():
-                result = connection.execute(text("SELECT * FROM get_license_status(:p_license_key)"), {'p_license_key': license_key}).fetchone()
-            
+            result = connection.execute(text("SELECT * FROM get_license_status(:p_license_key)"), {'p_license_key': license_key}).fetchone()
             if not result:
                 return jsonify({"isValid": False, "message": "License key not found."}), 404
             
@@ -138,16 +134,15 @@ def recover_link():
 
     try:
         with engine.connect() as connection:
-            with connection.begin():
-                query = text("""
-                    SELECT original_filename, download_url 
-                    FROM conversions 
-                    WHERE license_key = :key 
-                    AND created_at >= NOW() - INTERVAL '60 minutes'
-                    ORDER BY created_at DESC 
-                    LIMIT 1
-                """)
-                result = connection.execute(query, {'key': license_key}).fetchone()
+            query = text("""
+                SELECT original_filename, download_url 
+                FROM conversions 
+                WHERE license_key = :key 
+                AND created_at >= NOW() - INTERVAL '60 minutes'
+                ORDER BY created_at DESC 
+                LIMIT 1
+            """)
+            result = connection.execute(query, {'key': license_key}).fetchone()
 
             if result:
                 response_data = {
