@@ -143,17 +143,13 @@ def download_all():
                     response = requests.get(url, stream=True)
                     response.raise_for_status()
 
-                    # *** FIX #2: Unzip the inner file in memory and add its contents ***
                     with BytesIO(response.content) as inner_zip_buffer:
                         with zipfile.ZipFile(inner_zip_buffer, 'r') as inner_zf:
                             for name in inner_zf.namelist():
-                                # Get the root folder name (e.g., "ArtyPacks.app_Badsumo_1")
                                 root_folder = name.split('/')[0]
                                 if root_folder and root_folder not in added_folders:
-                                    # This check prevents adding the same folder multiple times
                                     added_folders.add(root_folder)
                                 
-                                # Write the file/folder structure to the master zip
                                 master_zf.writestr(name, inner_zf.read(name))
 
                 except requests.exceptions.RequestException as e:
@@ -248,32 +244,40 @@ def process_brushset(filepath):
                 and 'artwork.png' not in name.lower()
                 and not name.startswith('__MACOSX')
             ]
-            if not image_files:
-                return None, "No valid stamp images were found in the brushset."
-
+            
             original_brushset_name = os.path.splitext(os.path.basename(filepath))[0]
             root_folder_name = f"ArtyPacks.app_{original_brushset_name}"
 
             zip_buffer = io.BytesIO()
             with zipfile.ZipFile(zip_buffer, 'w', zipfile.ZIP_DEFLATED) as zf:
+                valid_images_found = 0
                 for i, image_file_name in enumerate(image_files):
                     with brushset_zip.open(image_file_name) as img_file:
                         img_data = io.BytesIO(img_file.read())
                         try:
-                            with Image.open(img_data):
-                                pass 
+                            # *** THIS IS THE FIX: Check image size and skip if too small ***
+                            with Image.open(img_data) as img:
+                                if img.width < 1024 or img.height < 1024:
+                                    continue # Skip this image
                         except Exception:
-                            continue
+                            continue # Skip if not a valid image
                         
                         img_data.seek(0)
                         
-                        image_filename_in_zip = f"{original_brushset_name}_{i + 1}.png"
+                        # Use a counter for valid images to ensure sequential naming (1, 2, 3...)
+                        valid_images_found += 1
+                        image_filename_in_zip = f"{original_brushset_name}_{valid_images_found}.png"
                         full_path_in_zip = os.path.join(root_folder_name, image_filename_in_zip)
                         
                         zf.writestr(full_path_in_zip, img_data.read())
             
+            # After processing all files, check if any valid images were added
+            if valid_images_found == 0:
+                return None, "No valid stamp images (>=1024px) were found in the brushset."
+
             zip_buffer.seek(0)
             return zip_buffer, None
+            
     except zipfile.BadZipFile:
         return None, "A provided file seems to be corrupted or isn't a valid .brushset."
     except Exception as e:
