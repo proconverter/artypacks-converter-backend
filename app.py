@@ -12,6 +12,7 @@ from flask_cors import CORS
 from sqlalchemy import create_engine, text
 from datetime import datetime, timezone
 from io import BytesIO
+from urllib.parse import urlparse, unquote
 
 # --- Flask App Initialization ---
 app = Flask(__name__)
@@ -84,7 +85,6 @@ def convert_files():
             timestamp = datetime.now(timezone.utc).strftime("%Y%m%d%H%M%S")
             zip_filename_for_storage = f"ArtyPacks.app_{base_name}_{timestamp}.zip"
 
-            # *** FIX #3: Use the correct content-type for ZIP files ***
             supabase.storage.from_("conversions").upload(
                 file=zip_buffer.getvalue(),
                 path=zip_filename_for_storage,
@@ -137,29 +137,38 @@ def download_all():
     master_zip_buffer = BytesIO()
     try:
         with zipfile.ZipFile(master_zip_buffer, 'w', zipfile.ZIP_DEFLATED) as master_zf:
-            # *** FIX #2: Use a set to track added filenames to prevent duplicates ***
-            added_filenames = set()
+            added_folders = set()
             for url in urls:
                 try:
                     response = requests.get(url, stream=True)
                     response.raise_for_status()
 
-                    filename = url.split('/')[-1]
-                    if filename not in added_filenames:
-                        master_zf.writestr(filename, response.content)
-                        added_filenames.add(filename)
+                    # *** FIX #2: Unzip the inner file in memory and add its contents ***
+                    with BytesIO(response.content) as inner_zip_buffer:
+                        with zipfile.ZipFile(inner_zip_buffer, 'r') as inner_zf:
+                            for name in inner_zf.namelist():
+                                # Get the root folder name (e.g., "ArtyPacks.app_Badsumo_1")
+                                root_folder = name.split('/')[0]
+                                if root_folder and root_folder not in added_folders:
+                                    # This check prevents adding the same folder multiple times
+                                    added_folders.add(root_folder)
+                                
+                                # Write the file/folder structure to the master zip
+                                master_zf.writestr(name, inner_zf.read(name))
 
                 except requests.exceptions.RequestException as e:
                     print(f"Failed to download file from {url}: {e}")
                     continue
+                except zipfile.BadZipFile:
+                    print(f"Could not unzip file from {url}. It might be corrupted.")
+                    continue
+
     except Exception as e:
         print(f"CRITICAL ERROR during master zip creation: {e}")
         return jsonify({"message": "Failed to create the final ZIP file."}), 500
 
     master_zip_buffer.seek(0)
 
-    # *** FIX #1: Create the human-readable timestamp for the filename ***
-    # Format: Mon_Sep_8_12-45PM
     timestamp_str = datetime.now(timezone.utc).strftime("%a_%b_%d_%I-%M%p")
     download_name = f'ArtyPacks.app_Batch_{timestamp_str}.zip'
 
