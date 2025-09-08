@@ -3,7 +3,7 @@ import uuid
 import zipfile
 import shutil
 import io
-import requests # <-- Add this import
+import requests
 from flask import Flask, request, jsonify, send_file
 from werkzeug.utils import secure_filename
 from PIL import Image
@@ -11,7 +11,7 @@ from supabase import create_client, Client
 from flask_cors import CORS
 from sqlalchemy import create_engine, text
 from datetime import datetime, timezone
-from io import BytesIO # <-- Add this import
+from io import BytesIO
 
 # --- Flask App Initialization ---
 app = Flask(__name__)
@@ -46,19 +46,17 @@ def convert_files():
 
     try:
         with engine.connect() as connection:
-            # Begin a transaction
             trans = connection.begin()
             try:
                 result = connection.execute(text("SELECT * FROM use_one_credit(:p_license_key)"), {'p_license_key': license_key}).fetchone()
                 if not result or not result[0]:
                     message = result[1] if result else 'Invalid license or no credits remaining.'
-                    trans.rollback() # Rollback if check fails
+                    trans.rollback()
                     return jsonify({"message": message}), 403
-                # If the check passes, commit the transaction
                 trans.commit()
             except Exception:
                 trans.rollback()
-                raise # Re-raise the exception to be caught by the outer block
+                raise
     except Exception as e:
         print(f"CRITICAL ERROR in /convert during credit use: {e}")
         return jsonify({"message": "Failed to update credits due to a database error."}), 500
@@ -86,16 +84,16 @@ def convert_files():
             timestamp = datetime.now(timezone.utc).strftime("%Y%m%d%H%M%S")
             zip_filename_for_storage = f"ArtyPacks.app_{base_name}_{timestamp}.zip"
 
+            # *** FIX #3: Use the correct content-type for ZIP files ***
             supabase.storage.from_("conversions").upload(
                 file=zip_buffer.getvalue(),
                 path=zip_filename_for_storage,
-                file_options={"content-type": "application/zip"}
+                file_options={"content-type": "application/x-zip-compressed"}
             )
             
             public_url = supabase.storage.from_("conversions").get_public_url(zip_filename_for_storage)
 
             with engine.connect() as connection:
-                # Use a transaction for the insert
                 with connection.begin():
                     connection.execute(text(
                         "INSERT INTO conversions (license_key, original_filename, download_url) VALUES (:key, :orig_name, :url)"
@@ -114,7 +112,7 @@ def convert_files():
         if os.path.exists(temp_dir):
             shutil.rmtree(temp_dir, ignore_errors=True)
 
-# --- NEW: Download All Route ---
+# --- Download All Route ---
 @app.route('/download-all', methods=['POST'])
 def download_all():
     data = request.get_json()
@@ -127,7 +125,6 @@ def download_all():
     if not license_key or not urls or not isinstance(urls, list):
         return jsonify({"message": "Missing or invalid license key or URLs."}), 400
 
-    # --- Security Check: Verify the license key is valid ---
     try:
         with engine.connect() as connection:
             result = connection.execute(text("SELECT is_valid FROM get_license_status(:p_license_key)"), {'p_license_key': license_key}).scalar()
@@ -137,36 +134,40 @@ def download_all():
         print(f"CRITICAL ERROR in /download-all during license check: {e}")
         return jsonify({"message": "A server error occurred during license validation."}), 500
 
-    # --- Create Master ZIP in Memory ---
     master_zip_buffer = BytesIO()
     try:
         with zipfile.ZipFile(master_zip_buffer, 'w', zipfile.ZIP_DEFLATED) as master_zf:
-            for i, url in enumerate(urls):
+            # *** FIX #2: Use a set to track added filenames to prevent duplicates ***
+            added_filenames = set()
+            for url in urls:
                 try:
-                    # Fetch the individual zip file from Supabase URL
                     response = requests.get(url, stream=True)
-                    response.raise_for_status() # Raises an HTTPError for bad responses (4xx or 5xx)
+                    response.raise_for_status()
 
-                    # Extract a clean filename from the URL path
                     filename = url.split('/')[-1]
+                    if filename not in added_filenames:
+                        master_zf.writestr(filename, response.content)
+                        added_filenames.add(filename)
 
-                    # Write the content of the fetched zip into the master zip
-                    master_zf.writestr(filename, response.content)
                 except requests.exceptions.RequestException as e:
                     print(f"Failed to download file from {url}: {e}")
-                    # Optionally, you could decide to skip this file and continue
-                    continue # Skip to the next file
+                    continue
     except Exception as e:
         print(f"CRITICAL ERROR during master zip creation: {e}")
         return jsonify({"message": "Failed to create the final ZIP file."}), 500
 
     master_zip_buffer.seek(0)
 
+    # *** FIX #1: Create the human-readable timestamp for the filename ***
+    # Format: Mon_Sep_8_12-45PM
+    timestamp_str = datetime.now(timezone.utc).strftime("%a_%b_%d_%I-%M%p")
+    download_name = f'ArtyPacks.app_Batch_{timestamp_str}.zip'
+
     return send_file(
         master_zip_buffer,
         mimetype='application/zip',
         as_attachment=True,
-        download_name=f'ArtyPacks_Batch_{datetime.now(timezone.utc).strftime("%Y%m%d")}.zip'
+        download_name=download_name
     )
 
 # --- License Check and Recovery Routes ---
@@ -232,12 +233,11 @@ def process_brushset(filepath):
     
     try:
         with zipfile.ZipFile(filepath, 'r') as brushset_zip:
-            # Filter for images, excluding any potential preview/artwork files from Procreate
             image_files = [
                 name for name in brushset_zip.namelist() 
                 if name.lower().endswith(('.png', '.jpg', '.jpeg')) 
                 and 'artwork.png' not in name.lower()
-                and not name.startswith('__MACOSX') # Exclude macOS metadata
+                and not name.startswith('__MACOSX')
             ]
             if not image_files:
                 return None, "No valid stamp images were found in the brushset."
@@ -250,18 +250,14 @@ def process_brushset(filepath):
                 for i, image_file_name in enumerate(image_files):
                     with brushset_zip.open(image_file_name) as img_file:
                         img_data = io.BytesIO(img_file.read())
-                        # Simple check to see if it's a valid image file that PIL can open
                         try:
-                            with Image.open(img_data) as img:
-                                # You could add more validation here if needed (e.g., size)
+                            with Image.open(img_data):
                                 pass 
                         except Exception:
-                            # If PIL can't open it, it's likely not a real image. Skip it.
                             continue
                         
                         img_data.seek(0)
                         
-                        # Create a clean filename for the image inside the zip
                         image_filename_in_zip = f"{original_brushset_name}_{i + 1}.png"
                         full_path_in_zip = os.path.join(root_folder_name, image_filename_in_zip)
                         
@@ -281,4 +277,3 @@ def process_brushset(filepath):
 @app.route('/')
 def index():
     return "Artypacks Converter Backend is running."
-
