@@ -135,7 +135,7 @@ def check_license():
         print(f"CRITICAL ERROR in /check-license: {e}")
         return jsonify({"message": "A server error occurred while validating the license."}), 500
 
-# --- Session Recovery Route (FINAL VERSION) ---
+# --- Session Recovery Route ---
 @app.route('/recover-session', methods=['POST'])
 def recover_session():
     data = request.get_json()
@@ -158,14 +158,12 @@ def recover_session():
                 return jsonify({"message": "No recent conversions found for this license."}), 404
 
             if len(results) > 1:
-                # More than one file found, this is a multi-file session
                 files_data = [{"originalFilename": row[0], "downloadUrl": row[1]} for row in results]
                 return jsonify({
                     "session_type": "multi",
                     "files": files_data
                 }), 200
             else:
-                # Exactly one file found, this is a single-file session
                 return jsonify({
                     "session_type": "single",
                     "original_filename": results[0][0],
@@ -176,11 +174,12 @@ def recover_session():
         print(f"CRITICAL ERROR in /recover-session: {e}")
         return jsonify({"message": "A server error occurred while recovering the session."}), 500
 
-# --- Download All Route ---
+# --- Download All Route (FINAL POLISHED VERSION) ---
 @app.route('/download-all', methods=['POST'])
 def download_all():
     data = request.get_json()
     urls = data.get('urls')
+    batch_counter = data.get('batchCounter', 1)
     if not urls or not isinstance(urls, list):
         return jsonify({"message": "A list of URLs is required."}), 400
 
@@ -191,20 +190,20 @@ def download_all():
                 response = requests.get(url, stream=True)
                 response.raise_for_status()
                 
-                # Clean the URL to create a valid filename
-                base_name_with_ext = url.split('/')[-1]
-                base_name = base_name_with_ext.split('?')[0]
-                
-                master_zf.writestr(base_name, response.content)
+                with zipfile.ZipFile(io.BytesIO(response.content)) as individual_zip:
+                    for item in individual_zip.infolist():
+                        master_zf.writestr(item, individual_zip.read(item.filename))
+
             except requests.exceptions.RequestException as e:
                 print(f"Warning: Could not download file from {url}. Error: {e}")
+                continue
+            except zipfile.BadZipFile:
+                print(f"Warning: Could not process a bad zip file from {url}.")
                 continue
 
     master_zip_buffer.seek(0)
     
-    # Create a human-readable filename for the master ZIP
-    batch_timestamp = datetime.now(timezone.utc).strftime("%a_%b_%d_%I%M%p")
-    master_zip_filename = f"ArtyPacks.app_Batch_{batch_timestamp}.zip"
+    master_zip_filename = f"ArtyPacks.app_Batch_{batch_counter}.zip"
 
     return send_file(
         master_zip_buffer,
@@ -232,7 +231,7 @@ def process_brushset(filepath):
                                 img_data.seek(0)
                                 valid_images_data.append(img_data.read())
                     except Exception:
-                        continue # Ignore files that are not valid images
+                        continue
 
             if not valid_images_data:
                 return None, "No valid stamp images (>= 1024x1024px) were found in the brushset."
