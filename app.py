@@ -200,6 +200,36 @@ def check_license():
         print(f"CRITICAL ERROR in /check-license: {e}")
         return jsonify({"message": "A server error occurred while validating the license."}), 500
 
+# *** NEW: DEDICATED ENDPOINT FOR RECOVERING A FULL BATCH/SESSION ***
+@app.route('/recover-session', methods=['POST'])
+def recover_session():
+    data = request.get_json()
+    license_key = data.get('licenseKey')
+    if not license_key:
+        return jsonify({"message": "License key is required."}), 400
+
+    try:
+        with engine.connect() as connection:
+            # This query finds all conversions within the last hour for the given key
+            query = text("""
+                SELECT original_filename, download_url 
+                FROM conversions 
+                WHERE license_key = :key 
+                AND created_at >= NOW() - INTERVAL '60 minutes'
+                ORDER BY created_at ASC
+            """)
+            results = connection.execute(query, {'key': license_key}).fetchall()
+
+            if results:
+                # Format the results into a list of objects
+                session_files = [{"originalFilename": row[0], "downloadUrl": row[1]} for row in results]
+                return jsonify({"files": session_files}), 200
+            else:
+                return jsonify({"message": "No recent session found for this license."}), 404
+    except Exception as e:
+        print(f"CRITICAL ERROR in /recover-session: {e}")
+        return jsonify({"message": "A server error occurred while recovering the session."}), 500
+
 @app.route('/recover-link', methods=['POST'])
 def recover_link():
     data = request.get_json()
@@ -255,23 +285,20 @@ def process_brushset(filepath):
                     with brushset_zip.open(image_file_name) as img_file:
                         img_data = io.BytesIO(img_file.read())
                         try:
-                            # *** THIS IS THE FIX: Check image size and skip if too small ***
                             with Image.open(img_data) as img:
                                 if img.width < 1024 or img.height < 1024:
-                                    continue # Skip this image
+                                    continue
                         except Exception:
-                            continue # Skip if not a valid image
+                            continue
                         
                         img_data.seek(0)
                         
-                        # Use a counter for valid images to ensure sequential naming (1, 2, 3...)
                         valid_images_found += 1
                         image_filename_in_zip = f"{original_brushset_name}_{valid_images_found}.png"
                         full_path_in_zip = os.path.join(root_folder_name, image_filename_in_zip)
                         
                         zf.writestr(full_path_in_zip, img_data.read())
             
-            # After processing all files, check if any valid images were added
             if valid_images_found == 0:
                 return None, "No valid stamp images (>=1024px) were found in the brushset."
 
